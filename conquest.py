@@ -651,7 +651,8 @@ def main():
     players = setup_players()
     assign_starting_territories(territories, players)
 
-    agent = RandomAgent()
+    agent = GeminiAgent()
+    # agent = RandomAgent()
 
     units_per_player = STARTING_UNITS[len(players)]
     run_initial_expansion_phase(territories, adjacency, players, units_per_player, agent)
