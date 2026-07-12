@@ -17,20 +17,20 @@ class Agent:
 SYSTEM_PROMPT = """You are an AI player in a simplified version of the board game Risk.
 
 RULES:
-- The world has 14 territories, each owned by a player and holding some number of units.
+- The world has 14 territories, each of them either owned by a player and holding some number of units or unclaimed.
 - After an initial expansion phase where players take turns placing starting units and reinforcing or occupying territories,
-  each turn of the game loop consists of phases: battle phase, repositioning phase and reinforcement phase. Players take turn
-  in order of their player numbers.
+  each turn of the game loop consists of 3 phases: combat phase, repositioning phase and reinforcement phase. Players take 
+  turns in order of their player numbers.
 - In combat phase, players take turns in starting an attack or skipping their turn. This means if you leave a territory with
   too few units after a battle, an opponent may immediately attack it, but so can you in the opposite situation. Battle phase
   continues until no more attacking move is possible or each player has skipped their last attacking chance.
-- You can only attack from a territory you own with at least 2 units, into an adjacent territory owned by another player.
-  The outcome of a battle is decided by random-generated numbers from 1 to 6. If the attacker's roll is higher, the defender
-  loses a unit in the attacked territory, otherwise the attacker loses a unit in the attacking territory. This means in case 
-  of equal rolls, the defender wins, and thus has a small advantage. Battle continues until the attacker has only one unit 
-  left in the attacking territory or the defender lost all their units in the attacked territory. The attacker can also call
-  off the attack after each roll.
-- In repositioning phase, each player has one turn to reposition units between their territories as many times as they want,
+- You can only attack from a territory you own with at least 2 units (one unit must always be left behind) into an adjacent 
+  territory owned by another player. The outcome of a battle is decided by random-generated numbers from 1 to 6. If the 
+  attacker's roll is higher, the defender loses a unit in the attacked territory, otherwise the attacker loses a unit in the 
+  attacking territory. This means in case of equal rolls, the defender wins, and thus has a small advantage. Battle continues
+  until the attacker has only one unit left in the attacking territory or the defender lost all their units in the attacked 
+  territory. The attacker can also call off the attack after each roll.
+- In repositioning phase, each player has one turn to reposition units between two of their territories as many times as they want,
   but once they finish repositioning, the next player's turn begins and they will not get another turn to reposition. Players
   can also occupy unclaimed territories in this phase by moving units into them.
 - In reinforcement phase, each player can place reinforcement units in territories they control. The number of reinforcements
@@ -50,7 +50,7 @@ class AgentError(Exception):
 class GeminiAgent(Agent):
     """Wraps a google-genai client so the game logic is entirely separated."""
 
-    def __init__(self, model="gemini-2.5-flash", show_thoughts=True, thinking_level="low"):
+    def __init__(self, model="gemini-2.5-flash", show_thoughts=False, thinking_level="low"):
         load_dotenv()
         api_key = os.environ.get("API_KEY")
 
@@ -65,8 +65,8 @@ class GeminiAgent(Agent):
             input = input,
             response_format  = schema,
             generation_config={
-            "thinking_level": "medium",        # Options: "low", "medium", "high"
-            "thinking_summaries": "auto"       # Requests the model to include internal reasoning
+            "thinking_level": self.thinking_level, # Options: "low", "medium", "high"
+            "thinking_summaries": "auto"           # Requests the model to include internal reasoning
             }
         )
         if self.show_thoughts:
@@ -88,7 +88,7 @@ class GeminiAgent(Agent):
         response = json.loads(response.output_text)
         return response["territory"]
 
-    def choose_unit_count(self, name, state_description, min_units, max_units):
+    def choose_unit_count(self, state_description, name, min_units, max_units):
         """Ask the agent to pick a whole number of units in [min_units, max_units]."""
         schema = {
             "type": "object",
@@ -115,19 +115,19 @@ class RandomAgent(Agent):
     """Implements a mock interface as if it were an AI agent, but makes uniformly random valid choices, 
     with no API calls. Useful for automated testing of the game logic without spending API credits."""
 
-    def choose_territory(self, state_description: str, options: list[str], allow_skip: bool=False, skip_meaning: str="skip") -> {str | None}:
+    def choose_territory(self, state_description: str, options: list[str], name: str, allow_skip: bool=False, skip_meaning: str="skip") -> {str | None}:
         options = list(options)
-        print(state_description)
+        # print(state_description)
         if allow_skip and random.random() < 1/(len(options)+1):
             return None
         return random.choice(options)
 
-    def choose_unit_count(self, state_description: str, min_units: int, max_units: int):
-        print(state_description)
+    def choose_unit_count(self, state_description: str, name: str, min_units: int, max_units: int) -> int:
+        # print(state_description)
         return random.randint(min_units, max_units)
 
-    def choose_yes_no(self, state_description: str):
-        print(state_description)
+    def choose_yes_no(self, state_description: str, name: str) -> bool:
+        # print(state_description)
         return random.random() < 0.5
 
 
@@ -135,6 +135,10 @@ def describe_state_for_agent(territories: territories_dict, adjacency: adjacency
     """Build a plain-text summary of the current game state from one
     player's point of view. Reused for every decision type so the agent
     always sees the board in a consistent format."""
+    if allow_skip:
+        all_options = options + ["SKIP"]
+    else:
+        all_options = options
     lines = [f"You are player {player_id} ({players[player_id]['name']})."]
     lines.append(situation)
     lines.append("Territories in the current game state (owner, units, neighbours):")
@@ -142,5 +146,5 @@ def describe_state_for_agent(territories: territories_dict, adjacency: adjacency
         owner = "0 (unclaimed)" if info["owned_by"] == 0 else f"{players[info['owned_by']]["name"]} (player {info['owned_by']})"
         neighbours = ", ".join(sorted(t for t in adjacency[name] if t != name))
         lines.append(f"- {name}: owner={owner}, units={info['units']}, neighbours=[{neighbours}]")
-    lines.append(f"Legal choices: {', '.join(str(x) for x in options)}")
+    lines.append(f"Legal choices: {', '.join(str(x) for x in all_options)}")
     return "\n".join(lines)

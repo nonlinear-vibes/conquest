@@ -89,6 +89,8 @@ STARTING_UNITS = {
 MIN_PLAYERS = min(STARTING_UNITS.keys())
 MAX_PLAYERS = max(STARTING_UNITS.keys())
 
+supported_models = ["gemini", "random agent"]
+
 
 def build_territories() -> territories_dict:
     return {
@@ -140,7 +142,11 @@ def setup_players() -> players_dict:
     for i in range(1, num_players + 1):
         name = get_nonempty_string_input(f"Name of player {i}: ")
         is_agent = get_yes_no_input(f"Is {name} AI? (y/n): ")
-        players[i] = {"name": name, "is_agent": is_agent, "is_playing": True}
+        if is_agent:
+            model = input(f"Select model for {name}: {", ".join(supported_models)}\n")
+        else:
+            model = None
+        players[i] = {"name": name, "is_agent": is_agent, "is_playing": True, "model": model}
 
     return players
 
@@ -275,7 +281,7 @@ def do_battle(attacker: str, defender: str, territories: territories_dict, playe
     attacking_player_id = territories[attacker]["owned_by"]
     attacking_player = players[attacking_player_id]
 
-    print(f"{attacking_player["name"]} ({attacking_player_id}) attacks {defender} from {attacker}.")
+    print(f"{attacking_player["name"]} ({attacking_player_id}) attacks {defender} ({players[territories[defender]["owned_by"]]["name"]}) from {attacker}.")
 
     keep_attacking = True
     while keep_attacking and territories[attacker]["units"] > 1 and territories[defender]["units"] > 0:
@@ -295,7 +301,7 @@ def do_battle(attacker: str, defender: str, territories: territories_dict, playe
             if attacking_player["is_agent"]:
                 situation = f"You've just conquered {defender} from {attacker}. Select the number of troops you send in."
                 state = describe_state_for_agent(territories, adjacency, players, attacking_player_id, situation, range(1, max_occupy+1))
-                print(state)
+                # print(state)
                 num_units = agent.choose_unit_count(state, players[attacking_player_id]["name"], min_units=1, max_units=max_occupy, )
             else:
                 num_units = get_int_input(
@@ -316,7 +322,7 @@ def do_battle(attacker: str, defender: str, territories: territories_dict, playe
         if attacking_player["is_agent"]:
             situation = f"The game is in the combat phase, you are attacking {defender} from {attacker}. Do you want to continue the attack?"
             state = describe_state_for_agent(territories, adjacency, players, attacking_player_id, situation, ["yes", "no"])
-            print(state)
+            # print(state)
             keep_attacking = agent.choose_yes_no(state, players[attacking_player_id]["name"])
         else:
             print_map(territories, players)
@@ -332,7 +338,7 @@ def do_battle(attacker: str, defender: str, territories: territories_dict, playe
 # Game phases
 # ---------------------------------------------------------------------------
 
-def run_initial_expansion_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, units_per_player: int, agent: {Agent | None}):
+def run_initial_expansion_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, units_per_player: int, agents: dict[str: {Agent | None}]):
     print("")
     print("-------------------------------")
     print("    Initial expansion phase    ")
@@ -342,6 +348,7 @@ def run_initial_expansion_phase(territories: territories_dict, adjacency: adjace
         remaining = units_per_player - round_num
         for player_id, player in players.items():
             if player["is_agent"]:
+                agent = agents[players[player_id]["model"]]
                 region = agent_choose_placement(territories, adjacency, players, player_id, remaining, agent)
             else:
                 print_map(territories, players)
@@ -372,8 +379,8 @@ def agent_choose_placement(territories: territories_dict, adjacency: adjacency_d
     """Prompts an agent for an initial expansion placement by choosing a territory."""
     valid_options = [t for t in territories if is_valid_placement(territories, adjacency, player_id, t)]
     situation = f"The game is in the initial expansion phase, place a unit to a region you control or an unclaimed neighbouring one. You have {remaining} unit(s) remaining."
-    state = describe_state_for_agent(territories, adjacency, players, player_id, situation, valid_options, valid_options)
-    print(state)
+    state = describe_state_for_agent(territories, adjacency, players, player_id, situation, valid_options)
+    # print(state)
     return agent.choose_territory(state, valid_options, players[player_id]["name"])
 
 
@@ -439,7 +446,7 @@ def agent_handle_attack(territories: territories_dict, adjacency: adjacency_dict
 
     situation = f"The game is in the combat phase, it is your turn to attack. Select a territory to initiate an attack from or skip your attacking turn."
     state = describe_state_for_agent(territories, adjacency, players, player_id, situation, attacker_options, True, "skip attacking turn")
-    print(state)
+    # print(state)
     attacker = agent.choose_territory(state, attacker_options, players[player_id]["name"], allow_skip=True)
     if attacker is None:
         print(f"{players[player_id]["name"]} ({player_id}) skipped their attacking turn.")
@@ -448,7 +455,7 @@ def agent_handle_attack(territories: territories_dict, adjacency: adjacency_dict
     defender_options = get_defender_options(territories, adjacency, attacker, player_id)
     situation = f"The game is in the combat phase, you chose to attack from {attacker}. Chose a territory to attack."
     state = describe_state_for_agent(territories, adjacency, players, player_id, situation, defender_options)
-    print(state)
+    # print(state)
     defender = agent.choose_territory(state, defender_options, players[player_id]["name"])
 
     do_battle(attacker, defender, territories, players, adjacency, agent)
@@ -456,11 +463,11 @@ def agent_handle_attack(territories: territories_dict, adjacency: adjacency_dict
     return False
 
 
-def run_attacking_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agent: {Agent | None}):
+def run_attacking_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agents: dict[str: {Agent | None}]):
     print("")
-    print("-----------------------")
-    print("    Combat phase    ")
-    print("-----------------------")
+    print("-------------------------------")
+    print("         Combat phase          ")
+    print("-------------------------------")
     while True:
         if not is_attack_possible(territories, adjacency):
             print("No attack is possible.")
@@ -476,6 +483,7 @@ def run_attacking_phase(territories: territories_dict, adjacency: adjacency_dict
                 round_done[player_id] = True
                 continue
             if player["is_agent"]:
+                agent = agents[players[player_id]["model"]]
                 round_done[player_id] = agent_handle_attack(territories, adjacency, players, player_id, agent)
             else:
                 round_done[player_id] = human_handle_attack(territories, adjacency, players, player_id, agent)
@@ -512,6 +520,7 @@ def human_reposition_turn(territories: territories_dict, adjacency: adjacency_di
         if territories[region_from]["owned_by"] != player_id:
             print("Choose a region you control.")
             continue
+
         if territories[region_from]["units"] < 2:
             print("You need a region with at least 2 units.")
             continue
@@ -540,14 +549,15 @@ def human_reposition_turn(territories: territories_dict, adjacency: adjacency_di
 
 
 def agent_reposition_turn(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, player_id: int, agent: Agent):
-    while True:
+    moves = 3
+    while moves > 0:
         source_options = get_reposition_source_options(territories, player_id)
         if not source_options:
             return
 
         situation = f"The game is in the repositioning phase. Select a territory you want to move troops from or finish repositioning."
         state = describe_state_for_agent(territories, adjacency, players, player_id, situation, source_options, True, "finish repositioning")
-        print(state)
+        # print(state)
         region_from = agent.choose_territory(state, source_options, players[player_id]["name"], allow_skip=True)
         if region_from is None:
             print(f"{players[player_id]["name"]} ({player_id}) finished repositioning.")
@@ -557,24 +567,25 @@ def agent_reposition_turn(territories: territories_dict, adjacency: adjacency_di
 
         situation = f"The game is in the repositioning phase. You chose to move units from {region_from}. Select a territory you want to move troops to."
         state = describe_state_for_agent(territories, adjacency, players, player_id, situation, destination_options)
-        print(state)
+        # print(state)
         region_to = agent.choose_territory(state, destination_options, players[player_id]["name"])
 
         max_movable = territories[region_from]["units"] - 1
         situation = f"The game is in the repositioning phase. You chose to move units from {region_from} to {region_to}. Select the number of units to move."
         state = describe_state_for_agent(territories, adjacency, players, player_id, situation, range(1, max_movable+1))
-        print(state)
+        # print(state)
         num_units = agent.choose_unit_count(state, players[player_id]["name"], min_units=1, max_units=max_movable)
 
         print(f"{players[player_id]["name"]} ({player_id}) moved {num_units} units from {region_from} to {region_to}.")
         apply_reposition(territories, region_from, region_to, num_units, player_id)
+        moves -= 1
 
 
-def run_repositioning_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agent: {Agent | None}):
+def run_repositioning_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agents: dict[str: {Agent | None}]):
     print("")
-    print("---------------------------")
-    print("    Repositioning phase    ")
-    print("---------------------------")
+    print("-------------------------------")
+    print("      Repositioning phase      ")
+    print("-------------------------------")
 
     for player_id, player in players.items():
         if not player["is_playing"]:
@@ -584,6 +595,7 @@ def run_repositioning_phase(territories: territories_dict, adjacency: adjacency_
             continue
 
         if player["is_agent"]:
+            agent = agents[players[player_id]["model"]]
             agent_reposition_turn(territories, adjacency, players, player_id, agent)
         else:
             print_map(territories, players)
@@ -617,12 +629,12 @@ def agent_reinforce_turn(territories: territories_dict, adjacency: adjacency_dic
     while reinforcements > 0:
         situation = f"The game is in the reinforcement phase. You have {reinforcements} reinforcement troops left to place. Select a region you want to reinforce."
         state = describe_state_for_agent(territories, adjacency, players, player_id, situation, owned_options)
-        print(state)
+        # print(state)
         region = agent.choose_territory(state, owned_options, players[player_id]["name"])
 
         situation = f"The game is in the reinforcement phase. You have choosen to reinforce {region}. Select the number of troops."
         state = describe_state_for_agent(territories, adjacency, players, player_id, situation, range(1, reinforcements+1))
-        print(state)
+        # print(state)
         num_units = agent.choose_unit_count(state, players[player_id]["name"], min_units=1, max_units=reinforcements)
         territories[region]["units"] += num_units
         reinforcements -= num_units
@@ -630,11 +642,11 @@ def agent_reinforce_turn(territories: territories_dict, adjacency: adjacency_dic
         print(f"{players[player_id]["name"]} ({player_id}) reinforced {region} with {num_units} units.")
 
 
-def run_reinforcement_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agent: {Agent | None}):
+def run_reinforcement_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agents: dict[str: {Agent | None}]):
     print("")
-    print("---------------------------")
-    print("    Reinforcement phase    ")
-    print("---------------------------")
+    print("-------------------------------")
+    print("      Reinforcement phase      ")
+    print("-------------------------------")
 
     for player_id, player in players.items():
         if not player["is_playing"]:
@@ -642,6 +654,7 @@ def run_reinforcement_phase(territories: territories_dict, adjacency: adjacency_
 
         reinforcements = count_territories_owned(territories, player_id)
         if player["is_agent"]:
+            agent = agents[players[player_id]["model"]]
             agent_reinforce_turn(territories, adjacency, players, player_id, reinforcements, agent)
         else:
             print_map(territories, players)
@@ -654,20 +667,22 @@ def run_reinforcement_phase(territories: territories_dict, adjacency: adjacency_
 
 def main():
     territories = build_territories()
-    adjacency = build_adjacency()
+    adjacency   = build_adjacency()
+
+    gemini       = GeminiAgent()
+    random_agent = RandomAgent()
+
+    agents = {"gemini": gemini, "random agent": random_agent}
 
     players = setup_players()
     assign_starting_territories(territories, players)
 
-    agent = GeminiAgent()
-    # agent = RandomAgent()
-
     units_per_player = STARTING_UNITS[len(players)]
-    run_initial_expansion_phase(territories, adjacency, players, units_per_player, agent)
+    run_initial_expansion_phase(territories, adjacency, players, units_per_player, agents)
 
     winner_name = None
     while winner_name is None:
-        run_attacking_phase(territories, adjacency, players, agent)
+        run_attacking_phase(territories, adjacency, players, agents)
         check_player_status(territories, players)
 
         active_players = [p for p in players.values() if p["is_playing"]]
@@ -675,8 +690,8 @@ def main():
             winner_name = active_players[0]["name"]
             break
 
-        run_repositioning_phase(territories, adjacency, players, agent)
-        run_reinforcement_phase(territories, adjacency, players, agent)
+        run_repositioning_phase(territories, adjacency, players, agents)
+        run_reinforcement_phase(territories, adjacency, players, agents)
 
     print("Game over:")
     print(f"{winner_name} won!")
