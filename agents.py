@@ -21,7 +21,7 @@ RULES:
 - After an initial expansion phase where players take turns placing starting units and reinforcing or occupying territories,
   each turn of the game loop consists of phases: battle phase, repositioning phase and reinforcement phase. Players take turn
   in order of their player numbers.
-- In battle phase, players take turns in starting an attack or skipping their turn. This means if you leave a territory with
+- In combat phase, players take turns in starting an attack or skipping their turn. This means if you leave a territory with
   too few units after a battle, an opponent may immediately attack it, but so can you in the opposite situation. Battle phase
   continues until no more attacking move is possible or each player has skipped their last attacking chance.
 - You can only attack from a territory you own with at least 2 units, into an adjacent territory owned by another player.
@@ -50,24 +50,31 @@ class AgentError(Exception):
 class GeminiAgent(Agent):
     """Wraps a google-genai client so the game logic is entirely separated."""
 
-    def __init__(self, model="gemini-2.5-flash", thinking_budget=256, max_retries=3):
+    def __init__(self, model="gemini-2.5-flash", show_thoughts=True, thinking_level="low"):
         load_dotenv()
         api_key = os.environ.get("API_KEY")
 
         self.client = genai.Client(api_key=api_key)
         self.model  = model
-        self.thinking_budget = thinking_budget
-        self.max_retries     = max_retries
+        self.thinking_level = thinking_level
+        self.show_thoughts  = show_thoughts
 
-    def _generate(self, input, schema):
+    def _generate(self, input, schema, name):
         response = self.client.interactions.create(
             model = self.model,
             input = input,
-            response_format = schema
+            response_format  = schema,
+            generation_config={
+            "thinking_level": "medium",        # Options: "low", "medium", "high"
+            "thinking_summaries": "auto"       # Requests the model to include internal reasoning
+            }
         )
+        if self.show_thoughts:
+            for i in range(len(response.steps)-1):
+                print(f"\n{name}: {response.steps[i].summary[0].text}\n")
         return response
 
-    def choose_territory(self, state_description, options, allow_skip=False, skip_meaning="skip"):
+    def choose_territory(self, state_description, options, name, allow_skip=False):
         """Ask the agent to pick one territory name from the options. Returns
         None if allow_skip is True and the agent chooses to skip."""
         options = list(options)
@@ -77,30 +84,30 @@ class GeminiAgent(Agent):
             "properties": {"territory": {"type": "string", "enum": enum_values}},
             "required": ["territory"],
         }
-        response = self._generate(state_description, schema)
+        response = self._generate(state_description, schema, name)
         response = json.loads(response.output_text)
         return response["territory"]
 
-    def choose_unit_count(self, state_description, min_units, max_units):
+    def choose_unit_count(self, name, state_description, min_units, max_units):
         """Ask the agent to pick a whole number of units in [min_units, max_units]."""
         schema = {
             "type": "object",
             "properties": {"units": {"type": "integer", "minimum": min_units, "maximum": max_units}},
             "required": ["units"],
         }
-        response = self._generate(state_description, schema)
+        response = self._generate(state_description, schema, name)
         response = json.loads(response.output_text)
         return response["units"]
 
 
-    def choose_yes_no(self, state_description):
+    def choose_yes_no(self, state_description, name):
         """Ask the agent a yes/no question. Returns True or False."""
         schema = {
             "type": "object",
             "properties": {"answer": {"type": "boolean"}},
             "required": ["answer"],
         }
-        response = self._generate(state_description, schema)
+        response = self._generate(state_description, schema, name)
         response = json.loads(response.output_text)
         return response["answer"]
 
@@ -132,8 +139,8 @@ def describe_state_for_agent(territories: territories_dict, adjacency: adjacency
     lines.append(situation)
     lines.append("Territories in the current game state (owner, units, neighbours):")
     for name, info in territories.items():
-        owner = "unclaimed" if info["owned_by"] == 0 else f"player {info['owned_by']}"
+        owner = "0 (unclaimed)" if info["owned_by"] == 0 else f"{players[info['owned_by']]["name"]} (player {info['owned_by']})"
         neighbours = ", ".join(sorted(t for t in adjacency[name] if t != name))
         lines.append(f"- {name}: owner={owner}, units={info['units']}, neighbours=[{neighbours}]")
-    lines.append(f"Valid choices: {', '.join(str(x) for x in options)}")
+    lines.append(f"Legal choices: {', '.join(str(x) for x in options)}")
     return "\n".join(lines)
