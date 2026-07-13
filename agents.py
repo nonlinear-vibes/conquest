@@ -63,8 +63,9 @@ class GeminiAgent(Agent):
         response = self.client.interactions.create(
             model = self.model,
             input = input,
-            response_format  = schema,
-            generation_config={
+            response_format    = schema,
+            system_instruction = SYSTEM_PROMPT,
+            generation_config  = {
             "thinking_level": self.thinking_level, # Options: "low", "medium", "high"
             "thinking_summaries": "auto"           # Requests the model to include internal reasoning
             }
@@ -86,6 +87,8 @@ class GeminiAgent(Agent):
         }
         response = self._generate(state_description, schema, name)
         response = json.loads(response.output_text)
+        if response["territory"] == "SKIP":
+            return None
         return response["territory"]
 
     def choose_unit_count(self, state_description, name, min_units, max_units):
