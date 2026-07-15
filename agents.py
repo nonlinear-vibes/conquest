@@ -14,7 +14,8 @@ class Agent:
     """Agent parent class"""
     pass
 
-SYSTEM_PROMPT = """You are an AI player in a simplified version of the board game Risk.
+def get_system_prompt(name, id):
+    return '''You are playing as {name} ({id}) in a simplified version of the board game Risk.
 
 RULES:
 - The world has 14 territories, each of them either owned by a player and holding some number of units or unclaimed.
@@ -40,7 +41,7 @@ RULES:
 - Your overall goal is to eliminate all other players by capturing every territory.
 
 You will always be given the current game state and a specific decision to make, along with the exact set of valid choices.
-Respond only in the requested JSON format -- do not include any other text."""
+Respond only in the requested JSON format -- do not include any other text.'''
 
 
 class AgentError(Exception):
@@ -59,12 +60,12 @@ class GeminiAgent(Agent):
         self.thinking_level = thinking_level
         self.show_thoughts  = show_thoughts
 
-    def _generate(self, input, schema, name):
+    def _generate(self, input: str, schema, name: str, id: int):
         response = self.client.interactions.create(
             model = self.model,
             input = input,
             response_format    = schema,
-            system_instruction = SYSTEM_PROMPT,
+            system_instruction = get_system_prompt(name, id),
             generation_config  = {
             "thinking_level": self.thinking_level, # Options: "low", "medium", "high"
             "thinking_summaries": "auto"           # Requests the model to include internal reasoning
@@ -75,8 +76,8 @@ class GeminiAgent(Agent):
                 print(f"\n{name}: {response.steps[i].summary[0].text}\n")
         return response
 
-    def choose_territory(self, state_description, options, name, allow_skip=False):
-        """Ask the agent to pick one territory name from the options. Returns
+    def choose_territory(self, state_description: str, question: str, options: list[str], game_events: list[str], name: str, id: int, allow_skip=False) -> {str | None}:
+        """Asks the agent to pick one territory name from the options. Returns
         None if allow_skip is True and the agent chooses to skip."""
         options = list(options)
         enum_values = options + (["SKIP"] if allow_skip else [])
@@ -85,7 +86,18 @@ class GeminiAgent(Agent):
             "properties": {"territory": {"type": "string", "enum": enum_values}},
             "required": ["territory"],
         }
-        response = self._generate(state_description, schema, name)
+        if game_events:
+            events_formatted = f'### Game events since your last turn:\n{"\n".join(f"- {event}" for event in game_events)}\n'
+        else:
+            events_formatted = ""
+        options_formatted = ", ".join(f"'{opt}'" for opt in enum_values)
+        prompt = f"""
+{events_formatted}
+{state_description}
+{question}
+
+### Legal choices: {options_formatted}"""
+        response = self._generate(prompt, schema, name, id)
         response = json.loads(response.output_text)
         if response["territory"] == "SKIP":
             return None
@@ -118,36 +130,94 @@ class RandomAgent(Agent):
     """Implements a mock interface as if it were an AI agent, but makes uniformly random valid choices, 
     with no API calls. Useful for automated testing of the game logic without spending API credits."""
 
-    def choose_territory(self, state_description: str, options: list[str], name: str, allow_skip: bool=False, skip_meaning: str="skip") -> {str | None}:
+    def choose_territory(self, state_description: str, question: str, options: list[str], game_events: list[str], name: str, allow_skip=False) -> {str | None}:
+        
+        ###
+        options = list(options)
+        enum_values = options + (["SKIP"] if allow_skip else [])
+        schema = {
+            "type": "object",
+            "properties": {"territory": {"type": "string", "enum": enum_values}},
+            "required": ["territory"],
+        }
+        if game_events:
+            events_formatted = f'### Game events since your last turn:\n{"\n".join(f"- {event}" for event in game_events)}\n'
+        else:
+            events_formatted = ""
+        options_formatted = ", ".join(f"'{opt}'" for opt in enum_values)
+        prompt = f"""
+{events_formatted}
+{state_description}
+{question}
+
+### Legal choices: {options_formatted}"""        
+        print(prompt)
+###
+
+
         options = list(options)
         # print(state_description)
         if allow_skip and random.random() < 1/(len(options)+1):
             return None
         return random.choice(options)
 
-    def choose_unit_count(self, state_description: str, name: str, min_units: int, max_units: int) -> int:
-        # print(state_description)
+    def choose_unit_count(self, question: str, game_events: list[str], name: str, min_units: int, max_units: int) -> int:
+        
+        schema = {
+            "type": "object",
+            "properties": {"units": {"type": "integer", "minimum": min_units, "maximum": max_units}},
+            "required": ["units"],
+        }
+        if game_events:
+            events_formatted = f'### Game events since your last turn:\n{"\n".join(f"- {event}" for event in game_events)}\n'
+        else:
+            events_formatted = ""
+        options_formatted = ", ".join(map(str, range(min_units, max_units+1)))
+        prompt = f"""
+{events_formatted}
+{question}
+
+### Legal choices: {options_formatted}"""        
+        print(prompt)
+
         return random.randint(min_units, max_units)
 
-    def choose_yes_no(self, state_description: str, name: str) -> bool:
-        # print(state_description)
+
+
+
+
+    def choose_yes_no(self, question: str, game_events: list[str], name: str) -> bool:
+        
+        schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "boolean"}},
+            "required": ["answer"],
+        }
+        if game_events:
+            events_formatted = f'### Game events since your last turn:\n{"\n".join(f"- {event}" for event in game_events)}\n'
+        else:
+            events_formatted = ""
+        options_formatted = ", ".join(["yes", "no"])
+        prompt = f"""
+{events_formatted}
+{question}
+
+### Legal choices: {options_formatted}"""        
+        print(prompt)
+
+
         return random.random() < 0.5
 
 
-def describe_state_for_agent(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, player_id: int, situation: str, options: list[str], allow_skip: bool=False, skip_meaning: str="skip") -> str:
+def describe_state_for_agent(territories: territories_dict, adjacency: adjacency_dict, players: players_dict) -> str:
     """Build a plain-text summary of the current game state from one
     player's point of view. Reused for every decision type so the agent
     always sees the board in a consistent format."""
-    if allow_skip:
-        all_options = options + ["SKIP"]
-    else:
-        all_options = options
-    lines = [f"You are player {player_id} ({players[player_id]['name']})."]
-    lines.append(situation)
-    lines.append("Territories in the current game state (owner, units, neighbours):")
+
+    lines = ["### Territories in the current game state (owner, units, neighbours):"]
     for name, info in territories.items():
         owner = "0 (unclaimed)" if info["owned_by"] == 0 else f"{players[info['owned_by']]["name"]} (player {info['owned_by']})"
         neighbours = ", ".join(sorted(t for t in adjacency[name] if t != name))
-        lines.append(f"- {name}: owner={owner}, units={info['units']}, neighbours=[{neighbours}]")
-    lines.append(f"Legal choices: {', '.join(str(x) for x in all_options)}")
+        lines.append(f"- {name}: owner = {owner}, units = {info['units']}, neighbours = [{neighbours}]")
+    lines.append('\n')
     return "\n".join(lines)

@@ -146,7 +146,7 @@ def setup_players() -> players_dict:
             model = input(f"Select model for {name}: {", ".join(supported_models)}\n")
         else:
             model = None
-        players[i] = {"name": name, "is_agent": is_agent, "is_playing": True, "model": model}
+        players[i] = {"name": name, "is_agent": is_agent, "is_playing": True, "model": model, "game_events": []}
 
     return players
 
@@ -154,10 +154,15 @@ def setup_players() -> players_dict:
 def assign_starting_territories(territories: territories_dict, players: players_dict):
     """Give each player a random unclaimed starting territory."""
     unclaimed = [t for t, info in territories.items() if info["owned_by"] == 0]
+    game_events = []
     for player_id in players:
         starting_region = random.choice(unclaimed)
         unclaimed.remove(starting_region)
         territories[starting_region] = {"owned_by": player_id, "units": 1}
+        game_events.append(f"{players[player_id]["name"]} ({player_id}) starts from {starting_region}.")
+    for player_id in players:
+        players[player_id]["game_events"] = game_events
+    print('\n'.join(game_events))
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +273,13 @@ def check_player_status(territories: territories_dict, players: players_dict) ->
             continue
         if count_territories_owned(territories, player_id) == 0:
             player["is_playing"] = False
-            print(f"{player['name']} ({player_id}) has been eliminated!")
+            event = f"{player['name']} ({player_id}) has been eliminated!"
+            broadcast_event(event, players)
+
+def broadcast_event(event, players):
+    print(event)
+    for id in players:
+        players[id]["game_events"].append(event)
 
 
 # ---------------------------------------------------------------------------
@@ -281,28 +292,32 @@ def do_battle(attacker: str, defender: str, territories: territories_dict, playe
     attacking_player_id = territories[attacker]["owned_by"]
     attacking_player = players[attacking_player_id]
 
-    print(f"{attacking_player["name"]} ({attacking_player_id}) attacks {defender} ({players[territories[defender]["owned_by"]]["name"]}) from {attacker}.")
+    event = f"{attacking_player["name"]} ({attacking_player_id}) attacks {defender} ({players[territories[defender]["owned_by"]]["name"]}) from {attacker}:"
+    broadcast_event(event, players)
 
     keep_attacking = True
     while keep_attacking and territories[attacker]["units"] > 1 and territories[defender]["units"] > 0:
         attack_roll = random.randint(1, 6)
         defend_roll = random.randint(1, 6)
-        print(f"Attacker roll: {attack_roll}")
-        print(f"Defender roll: {defend_roll}")
+        event = f"- Attacker roll: {attack_roll}"
+        players[attacking_player_id]["game_events"].append(event)
+        event = f"- Defender roll: {defend_roll}"
+        players[attacking_player_id]["game_events"].append(event)
 
         if attack_roll > defend_roll:
             territories[defender]["units"] -= 1
         else:
             territories[attacker]["units"] -= 1
+        event = f"- Remaining units: Attacker: {territories[attacker]["units"]}, Defender: {territories[defender]["units"]}"
+        broadcast_event(event, players)
 
         if territories[defender]["units"] == 0:
             territories[defender]["owned_by"] = attacking_player_id
             max_occupy = territories[attacker]["units"] - 1
             if attacking_player["is_agent"]:
-                situation = f"You've just conquered {defender} from {attacker}. Select the number of troops you send in."
-                state = describe_state_for_agent(territories, adjacency, players, attacking_player_id, situation, range(1, max_occupy+1))
-                # print(state)
-                num_units = agent.choose_unit_count(state, players[attacking_player_id]["name"], min_units=1, max_units=max_occupy, )
+                question = f"You've conquered {defender} from {attacker}. Select the number of troops you send in."
+                num_units = agent.choose_unit_count(question, players[attacking_player_id]["game_events"], players[attacking_player_id]["name"], min_units=1, max_units=max_occupy)
+                players[attacking_player_id]["game_events"] = []
             else:
                 num_units = get_int_input(
                     f"{attacking_player["name"]} ({attacking_player_id}), number of units to occupy the region (1-{max_occupy}): ",
@@ -310,28 +325,33 @@ def do_battle(attacker: str, defender: str, territories: territories_dict, playe
                     max_val=max_occupy
                 )
                 print_map(territories, players)
-            print(f"{defender} has been conquered with {num_units} units.")
+
+            event = f"{defender} has been conquered by {players[attacking_player_id]["name"]} ({attacking_player_id}) with {num_units} units."
+            broadcast_event(event, players)
+
             territories[attacker]["units"] -= num_units
             territories[defender]["units"] += num_units
             return
 
         if territories[attacker]["units"] == 1:
-            print(f"{attacking_player["name"]} ({attacking_player_id}) has not enough units in {attacker} to maintain the attack.")
+            event = f"{attacking_player["name"]} ({attacking_player_id}) has not enough units in {attacker} to maintain the attack."
+            broadcast_event(event, players)
             return
 
         if attacking_player["is_agent"]:
-            situation = f"The game is in the combat phase, you are attacking {defender} from {attacker}. Do you want to continue the attack?"
-            state = describe_state_for_agent(territories, adjacency, players, attacking_player_id, situation, ["yes", "no"])
-            # print(state)
-            keep_attacking = agent.choose_yes_no(state, players[attacking_player_id]["name"])
+            question = f"Do you want to continue the attack?"
+            keep_attacking = agent.choose_yes_no(question, players[attacking_player_id]["game_events"], players[attacking_player_id]["name"])
+            players[attacking_player_id]["game_events"] = []
         else:
             print_map(territories, players)
             keep_attacking = get_yes_no_input("Continue the attack? (y/n): ")
 
         if keep_attacking:
-            print(f"{attacking_player["name"]} ({attacking_player_id}) continues the attack.")
+            event = f"- {attacking_player["name"]} ({attacking_player_id}) continues the attack."
+            broadcast_event(event, players)
         else:
-            print(f"{attacking_player["name"]} ({attacking_player_id}) called off the attack.")
+            event = f"{attacking_player["name"]} ({attacking_player_id}) called off the attack."
+            broadcast_event(event, players)
 
 
 # ---------------------------------------------------------------------------
@@ -339,10 +359,11 @@ def do_battle(attacker: str, defender: str, territories: territories_dict, playe
 # ---------------------------------------------------------------------------
 
 def run_initial_expansion_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, units_per_player: int, agents: dict[str: {Agent | None}]):
-    print("")
-    print("-------------------------------")
-    print("    Initial expansion phase    ")
-    print("-------------------------------")
+    event = f"""
+-------------------------------
+    Initial expansion phase    
+-------------------------------"""
+    broadcast_event(event, players)
 
     for round_num in range(units_per_player):
         remaining = units_per_player - round_num
@@ -350,13 +371,17 @@ def run_initial_expansion_phase(territories: territories_dict, adjacency: adjace
             if player["is_agent"]:
                 agent = agents[players[player_id]["model"]]
                 region = agent_choose_placement(territories, adjacency, players, player_id, remaining, agent)
+                players[player_id]["game_events"] = []
             else:
                 print_map(territories, players)
                 region = human_choose_placement(territories, adjacency, players, player_id, remaining)
             if territories[region]["owned_by"] == 0:
-                print(f"{player["name"]} ({player_id}) claimed {region}.")
+                event = f"{player["name"]} ({player_id}) claimed {region}."
+                broadcast_event(event, players)
             else:
-                print(f"{player["name"]} ({player_id}) reinforced {region}.")
+                event = f"{player["name"]} ({player_id}) reinforced {region}."
+                broadcast_event(event, players)
+
             territories[region]["owned_by"] = player_id
             territories[region]["units"] += 1
     print_map(territories, players)
@@ -378,10 +403,10 @@ def human_choose_placement(territories: territories_dict, adjacency: adjacency_d
 def agent_choose_placement(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, player_id: int, remaining: int, agent: Agent) -> str:
     """Prompts an agent for an initial expansion placement by choosing a territory."""
     valid_options = [t for t in territories if is_valid_placement(territories, adjacency, player_id, t)]
-    situation = f"The game is in the initial expansion phase, place a unit to a region you control or an unclaimed neighbouring one. You have {remaining} unit(s) remaining."
-    state = describe_state_for_agent(territories, adjacency, players, player_id, situation, valid_options)
-    # print(state)
-    return agent.choose_territory(state, valid_options, players[player_id]["name"])
+    question = f"Place a unit to a region you control or an unclaimed neighbouring one. You have {remaining} unit(s) remaining."
+    state = describe_state_for_agent(territories, adjacency, players)
+    game_events = players[player_id]["game_events"]
+    return agent.choose_territory(state, question, valid_options, game_events, players[player_id]["name"])
 
 
 def get_attacker_options(territories: territories_dict, adjacency: adjacency_dict, player_id: int) -> list[str]:
@@ -441,22 +466,24 @@ def agent_handle_attack(territories: territories_dict, adjacency: adjacency_dict
     Returns True if done for this round (skipped), False if they completed an attack."""
     attacker_options = get_attacker_options(territories, adjacency, player_id)
     if not attacker_options:
-        print(f"{players[player_id]["name"]} ({player_id}) has no attacking possibility.")
+        event = f"{players[player_id]["name"]} ({player_id}) has no attacking possibility."
+        broadcast_event(event, players)
         return True
 
-    situation = f"The game is in the combat phase, it is your turn to attack. Select a territory to initiate an attack from or skip your attacking turn."
-    state = describe_state_for_agent(territories, adjacency, players, player_id, situation, attacker_options, True, "skip attacking turn")
-    # print(state)
-    attacker = agent.choose_territory(state, attacker_options, players[player_id]["name"], allow_skip=True)
+    question = f"Select a territory to initiate an attack from or skip your attacking turn."
+    state = describe_state_for_agent(territories, adjacency, players)
+    attacker = agent.choose_territory(state, question, attacker_options, players[player_id]["game_events"], players[player_id]["name"], allow_skip=True)
+    players[player_id]["game_events"] = []
     if attacker is None:
-        print(f"{players[player_id]["name"]} ({player_id}) skipped their attacking turn.")
+        event = f"{players[player_id]["name"]} ({player_id}) skipped their attacking turn."
+        broadcast_event(event, players)
         return True
 
     defender_options = get_defender_options(territories, adjacency, attacker, player_id)
-    situation = f"The game is in the combat phase, you chose to attack from {attacker}. Chose a territory to attack."
-    state = describe_state_for_agent(territories, adjacency, players, player_id, situation, defender_options)
-    # print(state)
-    defender = agent.choose_territory(state, defender_options, players[player_id]["name"])
+    question = f"You chose to attack from {attacker}. Chose a territory to attack."
+    state = describe_state_for_agent(territories, adjacency, players)
+    defender = agent.choose_territory("", question, defender_options, [], "")
+    players[player_id]["game_events"] = []
 
     do_battle(attacker, defender, territories, players, adjacency, agent)
     check_player_status(territories, players)
@@ -464,13 +491,16 @@ def agent_handle_attack(territories: territories_dict, adjacency: adjacency_dict
 
 
 def run_attacking_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agents: dict[str: {Agent | None}]):
-    print("")
-    print("-------------------------------")
-    print("         Combat phase          ")
-    print("-------------------------------")
+    event = f"""
+-------------------------------
+         Combat phase          
+-------------------------------"""
+    broadcast_event(event, players)
+    
     while True:
         if not is_attack_possible(territories, adjacency):
-            print("No attack is possible.")
+            event = "No attack is possible."
+            broadcast_event(event, players)
             break
 
         round_done = {}
@@ -478,10 +508,11 @@ def run_attacking_phase(territories: territories_dict, adjacency: adjacency_dict
             if not player["is_playing"]:
                 round_done[player_id] = True
                 continue
-            if not player_can_move(territories, player_id):
-                print(f"{player['name']} ({player_id}) has not enough troops to attack. Skipping turn.")
+            """if not player_can_move(territories, player_id):
+                event = f"{player['name']} ({player_id}) has not enough troops to attack. Skipping turn."
+                broadcast_event(event, players)
                 round_done[player_id] = True
-                continue
+                continue"""
             if player["is_agent"]:
                 agent = agents[players[player_id]["model"]]
                 round_done[player_id] = agent_handle_attack(territories, adjacency, players, player_id, agent)
@@ -555,43 +586,48 @@ def agent_reposition_turn(territories: territories_dict, adjacency: adjacency_di
         if not source_options:
             return
 
-        situation = f"The game is in the repositioning phase. Select a territory you want to move troops from or finish repositioning."
-        state = describe_state_for_agent(territories, adjacency, players, player_id, situation, source_options, True, "finish repositioning")
-        # print(state)
-        region_from = agent.choose_territory(state, source_options, players[player_id]["name"], allow_skip=True)
+        question = f"Select a territory you want to move troops from or finish repositioning."
+        state = describe_state_for_agent(territories, adjacency, players)
+        region_from = agent.choose_territory(state, question, source_options, players[player_id]["game_events"], players[player_id]["name"], allow_skip=True)
+        players[player_id]["game_events"] = []
         if region_from is None:
-            print(f"{players[player_id]["name"]} ({player_id}) finished repositioning.")
+            event = f"{players[player_id]["name"]} ({player_id}) finished repositioning."
+            broadcast_event(event, players)
             return
 
         destination_options = get_reposition_destination_options(territories, adjacency, region_from, player_id)
 
-        situation = f"The game is in the repositioning phase. You chose to move units from {region_from}. Select a territory you want to move troops to."
-        state = describe_state_for_agent(territories, adjacency, players, player_id, situation, destination_options)
-        # print(state)
-        region_to = agent.choose_territory(state, destination_options, players[player_id]["name"])
+        question = f"You chose to move units from {region_from}. Select a territory you want to move troops to."
+        state = describe_state_for_agent(territories, adjacency, players)
+        region_to = agent.choose_territory(state, question, destination_options, players[player_id]["game_events"], players[player_id]["name"])
+        players[player_id]["game_events"] = []
 
         max_movable = territories[region_from]["units"] - 1
-        situation = f"The game is in the repositioning phase. You chose to move units from {region_from} to {region_to}. Select the number of units to move."
-        state = describe_state_for_agent(territories, adjacency, players, player_id, situation, range(1, max_movable+1))
-        # print(state)
-        num_units = agent.choose_unit_count(state, players[player_id]["name"], min_units=1, max_units=max_movable)
+        question = f"You chose to move units from {region_from} to {region_to}. Select the number of units to move."
+        state = describe_state_for_agent(territories, adjacency, players)
+        num_units = agent.choose_unit_count(question, players[player_id]["game_events"], players[player_id]["name"], min_units=1, max_units=max_movable)
+        players[player_id]["game_events"] = []
 
-        print(f"{players[player_id]["name"]} ({player_id}) moved {num_units} units from {region_from} to {region_to}.")
         apply_reposition(territories, region_from, region_to, num_units, player_id)
         moves -= 1
 
+        event = f"{players[player_id]["name"]} ({player_id}) moved {num_units} units from {region_from} to {region_to}."
+        broadcast_event(event, players)
+
 
 def run_repositioning_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agents: dict[str: {Agent | None}]):
-    print("")
-    print("-------------------------------")
-    print("      Repositioning phase      ")
-    print("-------------------------------")
+    event = f"""
+-------------------------------
+      Repositioning phase      
+-------------------------------"""
+    broadcast_event(event, players)
 
     for player_id, player in players.items():
         if not player["is_playing"]:
             continue
         if not player_can_move(territories, player_id):
-            print(f"{player['name']} ({player_id}) has no troops to reposition. Skipping turn.")
+            event = f"{player['name']} ({player_id}) has no troops to reposition. Skipping turn."
+            broadcast_event(event, players)
             continue
 
         if player["is_agent"]:
@@ -627,26 +663,28 @@ def human_reinforce_turn(territories: territories_dict, players: players_dict, p
 def agent_reinforce_turn(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, player_id: int, reinforcements: int, agent: Agent):
     owned_options = [t for t, info in territories.items() if info["owned_by"] == player_id]
     while reinforcements > 0:
-        situation = f"The game is in the reinforcement phase. You have {reinforcements} reinforcement troops left to place. Select a region you want to reinforce."
-        state = describe_state_for_agent(territories, adjacency, players, player_id, situation, owned_options)
-        # print(state)
-        region = agent.choose_territory(state, owned_options, players[player_id]["name"])
+        question = f"You have {reinforcements} reinforcement troops left to place. Select a region you want to fortify."
+        state = describe_state_for_agent(territories, adjacency, players)
+        region = agent.choose_territory(state, question, owned_options, players[player_id]["game_events"], players[player_id]["name"])
+        players[player_id]["game_events"] = []
 
-        situation = f"The game is in the reinforcement phase. You have choosen to reinforce {region}. Select the number of troops."
-        state = describe_state_for_agent(territories, adjacency, players, player_id, situation, range(1, reinforcements+1))
-        # print(state)
-        num_units = agent.choose_unit_count(state, players[player_id]["name"], min_units=1, max_units=reinforcements)
+        question = f"You chose to reinforce {region}. Select the number of troops."
+        state = describe_state_for_agent(territories, adjacency, players)
+        num_units = agent.choose_unit_count(question, players[player_id]["game_events"], players[player_id]["name"], min_units=1, max_units=reinforcements)
+        players[player_id]["game_events"] = []
         territories[region]["units"] += num_units
         reinforcements -= num_units
         
-        print(f"{players[player_id]["name"]} ({player_id}) reinforced {region} with {num_units} units.")
+        event = f"{players[player_id]["name"]} ({player_id}) reinforced {region} with {num_units} units."
+        broadcast_event(event, players)
 
 
 def run_reinforcement_phase(territories: territories_dict, adjacency: adjacency_dict, players: players_dict, agents: dict[str: {Agent | None}]):
-    print("")
-    print("-------------------------------")
-    print("      Reinforcement phase      ")
-    print("-------------------------------")
+    event = f"""
+-------------------------------
+      Reinforcement phase      
+-------------------------------"""
+    broadcast_event(event, players)
 
     for player_id, player in players.items():
         if not player["is_playing"]:
