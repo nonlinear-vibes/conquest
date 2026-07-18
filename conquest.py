@@ -307,7 +307,8 @@ def check_for_human_player(players: Players) -> bool:
 
 def broadcast_event(event: str, players: Players) -> None:
     for id in players:
-        players[id]["game_events"].append(event)
+        if players[id]["is_agent"]:
+            players[id]["game_events"].append(event)
     print(event)
 
 
