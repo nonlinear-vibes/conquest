@@ -4,7 +4,7 @@ Conquest is a simplified version of the board game Risk, built as a playground f
 
 Playable in the console with any mix of human players and LLM agents. A `RandomAgent` (uniformly random valid moves) exists as a free, no-API-key baseline opponent and for automated testing.
 
-![preview](docs/conquest_map_with_AI_thoughts.png)
+![preview](docs/conquest_game_map.png)
 
 ## Project layout
 
