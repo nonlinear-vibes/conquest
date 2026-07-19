@@ -99,12 +99,12 @@ class GeminiAgent(Agent):
     """Wraps a google-genai client so the game logic is entirely separated from prompts, schemas, and the Gemini SDK. 
     Uses the Interactions API (previous_interaction_id) so each player's agent retains memory of its own game across calls."""
 
-    def __init__(self, model: str = "gemini-2.5-flash", show_thoughts: bool = False, thinking_level: str = "low"):
+    def __init__(self, model: str = "gemini-2.5-flash", show_thoughts: bool = True, thinking_level: str = "low"):
         from dotenv import load_dotenv
         from google import genai
 
         load_dotenv()
-        api_key = os.environ.get("API_KEY")
+        api_key = os.environ.get("GEMINI_KEY")
         if api_key is None:
             raise RuntimeError("API key not found. Set API_KEY in your environment or .env file.")
 
@@ -114,12 +114,12 @@ class GeminiAgent(Agent):
         self.thinking_level = thinking_level
         self.show_thoughts  = show_thoughts
 
-    def _generate(self, prompt_text: str, schema: dict, name: str, player_id: int, interaction_id: str | None):
+    def _generate(self, prompt_text: str, schema: dict, player_name: str, player_id: int, interaction_id: str | None):
         response = self.client.interactions.create(
             model = self.model,
             input = prompt_text,
             response_format    = schema,
-            system_instruction = get_system_prompt(name, player_id),
+            system_instruction = get_system_prompt(player_name, player_id),
             previous_interaction_id = interaction_id,
             generation_config  = {
             "thinking_level": self.thinking_level, # Options: "low", "medium", "high"
@@ -128,7 +128,7 @@ class GeminiAgent(Agent):
         )
         if self.show_thoughts:
             for step in response.steps[:-1]:
-                print(f"\n{name}: {step.summary[0].text}\n")
+                print(f"\n{player_name}: {step.summary[0].text}\n")
         return response
 
     
@@ -145,7 +145,7 @@ class GeminiAgent(Agent):
             "required": ["territory"],
         }
 
-        prompt = build_prompt(players, player_id, enum_values, state_description, question)
+        prompt = build_prompt(players[player_id]["game_events"], enum_values, state_description, question)
         response = self._generate(prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
@@ -164,7 +164,7 @@ class GeminiAgent(Agent):
             "required": ["units"],
         }
 
-        prompt = build_prompt(players, player_id, enum_values, "", question)
+        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
         response = self._generate(prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
@@ -181,13 +181,122 @@ class GeminiAgent(Agent):
             "required": ["answer"],
         }
  
-        prompt = build_prompt(players, player_id, enum_values, "", question)
+        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
         response = self._generate(prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
         result = json.loads(response.output_text)
         return result["answer"]
 
+
+class OpenAIAgent(Agent):
+    """Wraps an OpenAI client utilizing the Responses API so game logic is entirely separated from prompts, schemas, and the OpenAI SDK.
+    Uses previous_response_id so each player's agent retains memory of its own game across calls."""
+
+    def __init__(self, model: str = "gpt-5-nano", show_thoughts: bool = True, thinking_level: str = "low"):
+        from dotenv import load_dotenv
+        from openai import OpenAI
+
+        load_dotenv()
+        api_key = os.environ.get("OPENAI_KEY")
+        if api_key is None:
+            raise RuntimeError("API key not found. Set OPENAI_KEY in your environment or .env file.")
+
+
+        self.client = OpenAI(api_key=api_key)
+        self.model  = model
+        self.thinking_level = thinking_level
+        self.show_thoughts  = show_thoughts
+
+    def _generate(self, action_name: str, prompt_text: str, schema: dict, player_name: str, player_id: int, response_id: str | None):
+        response = self.client.responses.create(
+            model = self.model,
+            input = prompt_text,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": action_name,
+                    "strict": True,
+                    "schema": schema
+                }
+            },
+            instructions = get_system_prompt(player_name, player_id),
+            previous_response_id = response_id,
+            reasoning = {
+            "effort": self.thinking_level,
+            "summary": "auto"
+        }
+        )
+
+        if self.show_thoughts:
+            for step in response.output[:-1]:
+                if step.type == 'reasoning' and step.summary:
+                    print(f"\n{player_name}: {step.summary[0].text}\n")
+
+        return response
+
+    
+    def choose_territory(self, state_description: str, question: str, options: list[str], players: Players, player_id: int, allow_skip: bool = False) -> str | None:
+        """Asks the agent to pick one territory name from the options. Returns
+        None if allow_skip is True and the agent chooses to skip."""
+
+        options = list(options)
+        enum_values = options + (["SKIP"] if allow_skip else [])
+ 
+        schema = {
+            "type": "object",
+            "properties": {"territory": {"type": "string", "enum": enum_values}},
+            "required": ["territory"],
+            "additionalProperties": False
+        }
+
+        prompt = build_prompt(players[player_id]["game_events"], enum_values, state_description, question)
+        response = self._generate("choose_territory", prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
+        players[player_id]["interaction_id"] = response.id
+
+        result = json.loads(response.output_text)
+        if result["territory"] == "SKIP":
+            return None
+        return result["territory"]
+
+    def choose_unit_count(self, question: str, players: Players, player_id: int, min_units: int, max_units: int) -> int:
+        """Ask the agent to pick a whole number of units in [min_units, max_units]."""
+
+        enum_values = [str(n) for n in range(min_units, max_units + 1)]
+        valid_integers = list(range(min_units, max_units + 1))
+
+        schema = {
+            "type": "object",
+            "properties": {"units": {"type": "integer", "enum": valid_integers}},
+            "required": ["units"],
+            "additionalProperties": False
+        }
+
+        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
+        response = self._generate("choose_unit_count", prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
+        players[player_id]["interaction_id"] = response.id
+
+        result = json.loads(response.output_text)
+        return result["units"]
+
+    def choose_yes_no(self, question: str, players: Players, player_id: int) -> bool:
+        """Ask the agent a yes/no question. Returns True or False."""
+
+        enum_values = ["yes (True)", "no (False)"]
+        schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "boolean"}},
+            "required": ["answer"],
+            "additionalProperties": False
+        }
+ 
+        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
+        response = self._generate("choose_yes_no", prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
+        players[player_id]["interaction_id"] = response.id
+
+        result = json.loads(response.output_text)
+        return result["answer"]
+    
 
 class RandomAgent(Agent):
     """Implements a mock interface as if it were an AI agent, but makes uniformly random valid choices, with no API calls. 
@@ -221,8 +330,7 @@ def describe_state_for_agent(territories: Territories, adjacency: Adjacency, pla
     return "\n".join(lines)
 
 
-def build_prompt(players: Players, player_id: int, enum_values: list[str], state_description: str, question: str) -> str:
-    game_events = players[player_id]["game_events"]
+def build_prompt(game_events: list[str], enum_values: list[str], state_description: str, question: str) -> str:
     if game_events:
         events_list = "\n".join(f"- {event}" for event in game_events)
         events_formatted = f"### Game events since your last turn:\n{events_list}\n"

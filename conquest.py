@@ -1,6 +1,6 @@
 import random
  
-from agents import Agent, GeminiAgent, RandomAgent, describe_state_for_agent
+from agents import Agent, GeminiAgent, OpenAIAgent, RandomAgent, describe_state_for_agent
 from game_types import Adjacency, PlayerInfo, Players, Territories
  
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ STARTING_UNITS = {
 MIN_PLAYERS = min(STARTING_UNITS.keys())
 MAX_PLAYERS = max(STARTING_UNITS.keys())
  
-SUPPORTED_MODELS = ["gemini", "random"]
+SUPPORTED_MODELS = ["gemini", "openai", "random"]
  
  
 def build_territories() -> Territories:
@@ -167,6 +167,8 @@ def build_agents(players: Players) -> dict[str, Agent]:
     agents: dict[str, Agent] = {}
     if "gemini" in selected_models:
         agents["gemini"] = GeminiAgent()
+    if "openai" in selected_models:
+        agents["openai"] = OpenAIAgent()
     if "random" in selected_models:
         agents["random"] = RandomAgent()
     return agents
@@ -183,6 +185,7 @@ def assign_starting_territories(territories: Territories, players: Players) -> N
         game_events.append(f"{players[player_id]['name']} ({player_id}) starts from {starting_region}.")
     for player_id in players:
         players[player_id]["game_events"] = game_events.copy()
+    print("\n-------------------------------")
     print("\n".join(game_events))
 
 
@@ -429,7 +432,7 @@ def human_choose_placement(territories: Territories, adjacency: Adjacency, playe
 def agent_choose_placement(territories: Territories, adjacency: Adjacency, players: Players, player_id: int, remaining: int, agent: Agent) -> str:
     """Prompts an agent for an initial expansion placement by choosing a territory."""
     valid_options = [t for t in territories if is_valid_placement(territories, adjacency, player_id, t)]
-    question = f"Place a unit to a region you control or an unclaimed neighbouring one. You have {remaining} unit(s) remaining."
+    question = f"The game is in the initial expansion phase. Place a unit to a region you control or an unclaimed neighbouring one. You have {remaining} unit(s) remaining."
     state = describe_state_for_agent(territories, adjacency, players)
     return agent.choose_territory(state, question, valid_options, players, player_id)
 
