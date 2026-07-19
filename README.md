@@ -1,12 +1,12 @@
 # Conquest
 
-Conquest is a simplified version of the board game Risk, built as a playground for comparing different AI approaches to strategic play: human players, LLM-backed agents, a random-decision-agent and a future reinforcement learning agent, all playable against each other in the same game engine.
+A simplified version of the board game Risk, built as a playground for comparing different AI approaches to strategic play: human players, LLM-backed agents, a random-decision-agent and a future reinforcement learning agent, all playable against each other in the same game engine.
 
 Playable in the console with any mix of human players and LLM agents. A `RandomAgent` (uniformly random valid moves) exists as a free, no-API-key baseline opponent and for automated testing.
 
 ![preview](docs/conquest_game_map.png)
 
-## Project layout
+## ⚙ Project layout
 
 | File | Contents |
 |---|---|
@@ -14,28 +14,59 @@ Playable in the console with any mix of human players and LLM agents. A `RandomA
 | `conquest.py` | Game engine: board setup, input validation, all game phases, the main loop. |
 | `agents.py` | Agent abstract base class (`Agent`) and its implementations (`GeminiAgent`, `RandomAgent`), plus the system prompt and state-description helpers used by LLM agents. |
 
-## Requirements
-
+## 🚀 Quick start
+### 1. Prerquisites
 - Python 3.11+ (uses `X | None` union syntax and `TypedDict`)
-- `python-dotenv` and `google-genai` — **for Gemini-backed
-  players**. Games with only human and/or `RandomAgent` players need neither
-  package nor an API key.
+- An API key from [Google AI Studio](aistudio.google.com) (**for Gemini-backed players**)
+- An API key from [OpenAI](platform.openai.com/home) (**for GPT-5-backed players**)
+- Games with only human and/or `RandomAgent` players need no API key
+- Optional: [uv](https://docs.astral.sh/uv/) package manager, install with:
+  - Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  - Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
 
-## Running the game
-
-```bash
-uv run conquest.py
+### 2. Clone the repository
+```
+git clone https://github.com/nonlinear-vibes/conquest
+cd conquest
 ```
 
-You'll be prompted for the number of players (2–5), each player's name and whether they're AI, if so you will be prompted for a model (`gemini` or `random` for now).
+### 3. Set up your environment
+Create a `.env` file in the root directory and add your API keys:
 
-## Game rules
+```
+echo "GEMINI_KEY=your_gemini_key_here" > .env
+echo "OPENAI_KEY=your_openai_key_here" > .env
+```
+
+### 4. Install dependencies
+If you have `uv` installed:
+```
+uv sync
+```
+If not:
+```
+pip install -r requirements.txt
+```
+
+### 5. Run the game
+If you have `uv` installed:
+```
+uv run conquest.py
+```
+If not:
+```
+python conquest.py
+```
+
+You'll be prompted for the number of players (2–5), each player's name and whether they're AI, if so you will be prompted for a model (`gemini`, `openai` or  `random`).
+
+## 🎲 Rules
 
 The map has 14 territories, each with a fixed set of neighbours (see `build_adjacency()` in `game.py` for the exact graph). A territory is either unclaimed or owned by one player, and holds some number of units.
 
 **Setup:** each player is randomly assigned one starting territory. Players then take turns placing one unit per round (in territories they own, or unclaimed territories adjacent to ones they own) for a number of rounds determined by how many starting units players get based on player count (2 players → 7 units, down to 5 players → 3 units).
 
-After setup, the game repeats three phases each round until one player remains:
+After setup, the game repeats three phases each round until only one player remains:
 
 1. **Combat:** Each player able to attack either launches one attack (from a territory they own with ≥2 units, into an adjacent enemy territory) or skips. This repeats in rounds until every player has skipped or run out of attacking options in the same round. Battles resolve one dice roll at a time (attacker vs. defender, defender wins ties); a battle ends when the defender is wiped out or the attacker is down to 1 unit, or the attacker chooses to call it off. Conquering a territory requires choosing how many units to move in (leaving at least 1 behind).
 2. **Repositioning:** Each player may move units between their own adjacent territories, or into adjacent unclaimed territories to occupy them, leaving at least 1 unit behind in the source territory each time. Agents are capped at 3 moves per turn to avoid infinite back and forth movement; humans can move until they choose to stop.
