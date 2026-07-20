@@ -15,7 +15,7 @@ Playable in the console with any mix of human players and LLM agents. A `RandomA
 | `agents.py` | Agent abstract base class (`Agent`) and its implementations (`GeminiAgent`, `RandomAgent`), plus the system prompt and state-description helpers used by LLM agents. |
 
 ## 🚀 Quick start
-### 1. Prerquisites
+### 1. Prerequisites
 - Python 3.11+ (uses `X | None` union syntax and `TypedDict`)
 - An API key from [Google AI Studio](aistudio.google.com) (**for Gemini-backed players**)
 - An API key from [OpenAI](platform.openai.com/home) (**for GPT-5-backed players**)
