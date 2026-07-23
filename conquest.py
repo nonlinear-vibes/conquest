@@ -119,9 +119,9 @@ def build_territories() -> Territories:
  
 def build_adjacency() -> Adjacency:
     return {
-        "Alaska":        {"Alaska", "Great Lakes", "North America", "Siberia"},
+        "Alaska":        {"Alaska", "Great Lakes", "Siberia"},
         "Great Lakes":   {"Great Lakes", "Alaska", "Greenland", "North America"},
-        "North America": {"North America", "Great Lakes", "Alaska", "South America"},
+        "North America": {"North America", "Great Lakes", "South America"},
         "South America": {"South America", "North America", "North Africa"},
         "Greenland":     {"Greenland", "Great Lakes", "Europe"},
         "Europe":        {"Europe", "Greenland", "North Africa", "Arabia", "West Asia"},
@@ -194,29 +194,34 @@ def assign_starting_territories(territories: Territories, players: Players) -> N
 # ---------------------------------------------------------------------------
 
 def print_map(territories: Territories, players: Players) -> None:
-    alaska =        f"{territories['Alaska']['owned_by']}: {territories['Alaska']['units']}"
-    great_lakes =   f"{territories['Great Lakes']['owned_by']}: {territories['Great Lakes']['units']}"
-    north_america = f"{territories['North America']['owned_by']}: {territories['North America']['units']}"
-    south_america = f"{territories['South America']['owned_by']}: {territories['South America']['units']}"
-    greenland =     f"{territories['Greenland']['owned_by']}: {territories['Greenland']['units']}"
-    europe =        f"{territories['Europe']['owned_by']}: {territories['Europe']['units']}"
-    north_africa =  f"{territories['North Africa']['owned_by']}: {territories['North Africa']['units']}"
-    south_africa =  f"{territories['South Africa']['owned_by']}: {territories['South Africa']['units']}"
-    arabia =        f"{territories['Arabia']['owned_by']}: {territories['Arabia']['units']}"
-    west_asia =     f"{territories['West Asia']['owned_by']}: {territories['West Asia']['units']}"
-    central_asia =  f"{territories['Central Asia']['owned_by']}: {territories['Central Asia']['units']}"
-    south_asia =    f"{territories['South Asia']['owned_by']}: {territories['South Asia']['units']}"
-    siberia =       f"{territories['Siberia']['owned_by']}: {territories['Siberia']['units']}"
-    australia =     f"{territories['Australia']['owned_by']}: {territories['Australia']['units']}"
+    player_colors = {0: "⚪", 1: "🔴", 2: "🔵", 3: "🟢", 4: "🟡", 5: "🟣"}
 
+    alaska =        f"{player_colors[territories['Alaska']['owned_by']]} {territories['Alaska']['units']}"
+    great_lakes =   f"{player_colors[territories['Great Lakes']['owned_by']]} {territories['Great Lakes']['units']}"
+    north_america = f"{player_colors[territories['North America']['owned_by']]} {territories['North America']['units']}"
+    south_america = f"{player_colors[territories['South America']['owned_by']]} {territories['South America']['units']}"
+    greenland =     f"{player_colors[territories['Greenland']['owned_by']]} {territories['Greenland']['units']}"
+    europe =        f"{player_colors[territories['Europe']['owned_by']]} {territories['Europe']['units']}"
+    north_africa =  f"{player_colors[territories['North Africa']['owned_by']]} {territories['North Africa']['units']}"
+    south_africa =  f"{player_colors[territories['South Africa']['owned_by']]} {territories['South Africa']['units']}"
+    arabia =        f"{player_colors[territories['Arabia']['owned_by']]} {territories['Arabia']['units']}"
+    west_asia =     f"{player_colors[territories['West Asia']['owned_by']]} {territories['West Asia']['units']}"
+    central_asia =  f"{player_colors[territories['Central Asia']['owned_by']]} {territories['Central Asia']['units']}"
+    south_asia =    f"{player_colors[territories['South Asia']['owned_by']]} {territories['South Asia']['units']}"
+    siberia =       f"{player_colors[territories['Siberia']['owned_by']]} {territories['Siberia']['units']}"
+    australia =     f"{player_colors[territories['Australia']['owned_by']]} {territories['Australia']['units']}"
+
+    
     legend_lines = []
     for player_id in range(1, MAX_PLAYERS + 1):
         if player_id in players:
-            text = (f"{player_id}: {players[player_id]['name']}, "
+            text = (f"({player_id}) {player_colors[player_id]} {players[player_id]['name']}: "
                      f"{count_territories_owned(territories, player_id)}")
+            line = text[:30].ljust(30)
         else:
             text = ""
-        line = text[:30].ljust(30)
+            line = text.ljust(31)
+        
         legend_lines.append(line)
 
     game_map = rf""" 	                                ..::::::'':::..'''''''''''''''::....
@@ -249,11 +254,11 @@ def print_map(territories: Territories, players: Players) -> None:
                                                  :         .'                          '.      .'                                   :     Australia   :
                                                  :        .'                            :     :                                      :.   ..'.       :
                                                 :      .''                               '''''                                         '''    ''..  .'      :..
-{legend_lines[0]}                  :    .'                                                                                           ::        .:'
-{legend_lines[1]}                  :   .'                                                                                             ''      ::
-{legend_lines[2]}                  :  :                                                                                                      ''
-{legend_lines[3]}                   '.:  ''
-{legend_lines[4]}                     ''"""
+{legend_lines[0]}                 :    .'                                                                                           ::        .:'
+{legend_lines[1]}                 :   .'                                                                                             ''      ::
+{legend_lines[2]}                 :  :                                                                                                      ''
+{legend_lines[3]}                  '.:  ''
+{legend_lines[4]}                    ''"""
     print(game_map)
 
 
