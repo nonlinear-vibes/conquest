@@ -109,7 +109,7 @@ def build_territories() -> Territories:
         "North Africa":  {"owned_by": 0, "units": 0},
         "South Africa":  {"owned_by": 0, "units": 0},
         "Arabia":        {"owned_by": 0, "units": 0},
-        "West Asia":     {"owned_by": 0, "units": 0},
+        "Ural":          {"owned_by": 0, "units": 0},
         "Central Asia":  {"owned_by": 0, "units": 0},
         "South Asia":    {"owned_by": 0, "units": 0},
         "Siberia":       {"owned_by": 0, "units": 0},
@@ -124,13 +124,13 @@ def build_adjacency() -> Adjacency:
         "North America": {"North America", "Great Lakes", "South America"},
         "South America": {"South America", "North America", "North Africa"},
         "Greenland":     {"Greenland", "Great Lakes", "Europe"},
-        "Europe":        {"Europe", "Greenland", "North Africa", "Arabia", "West Asia"},
+        "Europe":        {"Europe", "Greenland", "North Africa", "Arabia", "Ural"},
         "North Africa":  {"North Africa", "South Africa", "South America", "Europe", "Arabia"},
         "South Africa":  {"South Africa", "North Africa"},
-        "Arabia":        {"Arabia", "Europe", "North Africa", "West Asia", "South Asia"},
-        "West Asia":     {"West Asia", "Europe", "Arabia", "South Asia", "Central Asia"},
-        "Central Asia":  {"Central Asia", "West Asia", "South Asia", "Siberia"},
-        "South Asia":    {"South Asia", "Arabia", "West Asia", "Central Asia", "Australia"},
+        "Arabia":        {"Arabia", "Europe", "North Africa", "Ural", "South Asia"},
+        "Ural":          {"Ural", "Europe", "Arabia", "South Asia", "Central Asia"},
+        "Central Asia":  {"Central Asia", "Ural", "South Asia", "Siberia"},
+        "South Asia":    {"South Asia", "Arabia", "Ural", "Central Asia", "Australia"},
         "Siberia":       {"Siberia", "Central Asia", "Alaska"},
         "Australia":     {"Australia", "South Asia"},
     }
@@ -205,7 +205,7 @@ def print_map(territories: Territories, players: Players) -> None:
     north_africa =  f"{player_colors[territories['North Africa']['owned_by']]} {territories['North Africa']['units']}"
     south_africa =  f"{player_colors[territories['South Africa']['owned_by']]} {territories['South Africa']['units']}"
     arabia =        f"{player_colors[territories['Arabia']['owned_by']]} {territories['Arabia']['units']}"
-    west_asia =     f"{player_colors[territories['West Asia']['owned_by']]} {territories['West Asia']['units']}"
+    ural =          f"{player_colors[territories['Ural']['owned_by']]} {territories['Ural']['units']}"
     central_asia =  f"{player_colors[territories['Central Asia']['owned_by']]} {territories['Central Asia']['units']}"
     south_asia =    f"{player_colors[territories['South Asia']['owned_by']]} {territories['South Asia']['units']}"
     siberia =       f"{player_colors[territories['Siberia']['owned_by']]} {territories['Siberia']['units']}"
@@ -232,8 +232,8 @@ def print_map(territories: Territories, players: Players) -> None:
    <- ':   Alaska..                    :'  ''':'..:''     '..:         ''       .   :'   :':                                                       Siberia :....''   ->
         '::':'     '':.           {great_lakes} '...  .:    ''.                    \   :.   ':::..:..:''                                {central_asia}             .''''''':  :
  .. .:  '            :''.     Great Lakes  '.:        '..                   .::::  .'''''                                  Central Asia       '.:      :.'    . .
-                       '::.           .:...       ..:::: :                     :::'     {europe}                 {west_asia}                               .::     '
-                         :              '':::...:::::'' ''                     .'      Europe .....:   ::  West Asia                          ..':.
+                       '::.           .:...       ..:::: :                     :::'     {europe}                 {ural}                               .::     '
+                         :              '':::...:::::'' ''                     .'      Europe .....:   ::    Ural                             ..':.
                          :                  ''' .:                           .'   ..::''.: ...:....'  : '.                              .  .''  ::'
                          '.        {north_america}       .'                             '...:.... '' :: :...      '''                            ':.:.' ...':
                            ':  North America .'                              :        '..  .:   :'                                     :  '.:''''
