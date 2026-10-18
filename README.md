@@ -1,6 +1,6 @@
 # Conquest
 
-A simplified version of the board game Risk, built as a playground for comparing different AI approaches to strategic play: human players, LLM-backed agents, a random-decision-agent and a [reinforcement learner agent](docs/ConquestRLAgent.pdf), all playable against each other in the same game engine.
+A simplified version of the board game Risk, built as a playground for comparing different AI approaches to strategic play: human players, LLM-backed agents, a random-decision-agent and a [reinforcement learner](docs/ConquestRLAgent.pdf), all playable against each other in the same game engine.
 
 Playable in the console with any mix of human players and AI agents. A `RandomAgent` (uniformly random valid moves) exists as a free, no-API-key baseline opponent and for automated testing.
 
