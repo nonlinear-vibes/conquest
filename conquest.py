@@ -1,13 +1,16 @@
+import os
 import random
+import argparse
+import importlib.util
  
-from agents import Agent, GeminiAgent, OpenAIAgent, RandomAgent, describe_state_for_agent
+from agents import Agent, GeminiAgent, OpenAIAgent, RandomAgent
 from game_types import Adjacency, PlayerInfo, Players, Territories
+
  
 # ---------------------------------------------------------------------------
 # Input validation helpers
 # ---------------------------------------------------------------------------
- 
- 
+
 def get_int_input(prompt: str, min_val: int, max_val: int) -> int:
     """Prompts until the player enters an integer within [min_val, max_val]."""
     while True:
@@ -48,8 +51,8 @@ def get_nonempty_string_input(prompt: str) -> str:
  
  
 def get_choice_input(prompt: str, valid_choices: list[str]) -> str:
-    """Prompts until the player enters one of valid_choices (case-insensitive
-    match). Returns the matching entry with its original casing."""
+    """Prompts until the player enters one of valid_choices (case-insensitive match).
+    Returns the matching entry with its original casing."""
     lookup = {choice.strip().lower(): choice for choice in valid_choices}
     while True:
         raw = input(prompt).strip().lower()
@@ -59,32 +62,36 @@ def get_choice_input(prompt: str, valid_choices: list[str]) -> str:
  
  
 def prompt_territory(prompt: str, territories: Territories) -> str:
-    """Prompts until the player enters a valid territory name."""
+    """Prompts until the player enters a valid territory name (case-insensitive).
+    Returns the name as spelled in territories."""
+    lookup = {str(key).strip().lower(): key for key in territories}
     while True:
-        raw = input(prompt).strip()
-        if raw not in territories:
+        raw = input(prompt).strip().lower()
+        if raw not in lookup:
             print("Enter a valid region.")
             continue
-        return raw
+        return lookup[raw]
  
  
 def prompt_territory_or_cancel(prompt: str, territories: Territories, cancel_str: str = "X") -> str | None:
-    """Prompts until the player enters a valid territory name, or the cancel
-    string. Returns None if the player cancelled."""
+    """Prompts until the player enters a valid territory name, or the cancel string.
+    Returns None if the player cancelled, otherwise the name as spelled in territories (input is case-insensitive)."""
+    lookup = {str(key).strip().lower(): key for key in territories}
     while True:
-        raw = input(prompt).strip()
+        raw = input(prompt).strip().lower()
         if raw.upper() == cancel_str:
             return None
-        if raw not in territories:
+        if raw not in lookup:
             print("Enter a valid region.")
             continue
-        return raw
+        return lookup[raw]
  
+
  
 # ---------------------------------------------------------------------------
 # Game setup
 # ---------------------------------------------------------------------------
- 
+
 STARTING_UNITS = {
     2: 7,
     3: 5,
@@ -95,7 +102,34 @@ STARTING_UNITS = {
 MIN_PLAYERS = min(STARTING_UNITS.keys())
 MAX_PLAYERS = max(STARTING_UNITS.keys())
  
-SUPPORTED_MODELS = ["gemini", "openai", "random"]
+SUPPORTED_MODELS = ["gemini", "openai", "random", "rl"]
+
+# Trained RLAgent checkpoint, written by `python rl_agent.py`.
+RL_CHECKPOINT = "rl_agent.pt"
+
+# RLAgent whose critic scores every player in the map legend (--show-values).
+# Set by setup_value_scorer(); None means no scores are shown.
+value_scorer = None
+
+
+def setup_value_scorer(agents: dict[str, Agent]) -> None:
+    """Load the trained critic for the map legend. Leaves scoring off, and says why, if PyTorch isn't installed or
+    no usable checkpoint exists, so the game always runs without them."""
+    global value_scorer
+    if importlib.util.find_spec("torch") is None:
+        print("PyTorch is not installed: playing without position values.")
+        return
+    if "rl" in agents:  # an RL player already loaded the checkpoint
+        value_scorer = agents["rl"]
+        return
+    if not os.path.exists(RL_CHECKPOINT):
+        print(f"No trained RL model at {RL_CHECKPOINT}: playing without position values.")
+        return
+    try:
+        from rl_agent import RLAgent
+        value_scorer = RLAgent.load(RL_CHECKPOINT)
+    except (ImportError, OSError, ValueError) as error:  # broken torch install, or an incompatible checkpoint
+        print(f"Could not load the RL critic ({error}): playing without position values.")
  
  
 def build_territories() -> Territories:
@@ -159,10 +193,9 @@ def setup_players() -> Players:
  
  
 def build_agents(players: Players) -> dict[str, Agent]:
-    """Construct exactly the agent backends actually needed for this game.
-    A GeminiAgent is only built (and its API key only required) if some
-    player actually selected the "gemini" model, so all-human or
-    all-random games never need an API key."""
+    """Construct exactly the agent backends actually needed for this game. A GeminiAgent is only built
+    (and its API key only required) if some player actually selected the "gemini" model, so all-human or
+    all-random games never need an API key. Likewise torch is only imported if some player selected "rl"."""
     selected_models = {p["model"] for p in players.values() if p["is_agent"]}
     agents: dict[str, Agent] = {}
     if "gemini" in selected_models:
@@ -171,12 +204,17 @@ def build_agents(players: Players) -> dict[str, Agent]:
         agents["openai"] = OpenAIAgent()
     if "random" in selected_models:
         agents["random"] = RandomAgent()
+    if "rl" in selected_models:
+        if not os.path.exists(RL_CHECKPOINT):
+            raise RuntimeError(f"No trained RL model at {RL_CHECKPOINT}. Train one first with `python rl_agent.py`.")
+        from rl_agent import RLAgent
+        agents["rl"] = RLAgent.load(RL_CHECKPOINT)
     return agents
  
  
 def assign_starting_territories(territories: Territories, players: Players) -> None:
     """Give each player a random unclaimed starting territory."""
-    unclaimed = [t for t, info in territories.items() if info["owned_by"] == 0]
+    unclaimed   = [t for t, info in territories.items() if info["owned_by"] == 0]
     game_events = []
     for player_id in players:
         starting_region = random.choice(unclaimed)
@@ -189,11 +227,14 @@ def assign_starting_territories(territories: Territories, players: Players) -> N
     print("\n".join(game_events))
 
 
+
 # ---------------------------------------------------------------------------
 # Map/status helpers
 # ---------------------------------------------------------------------------
 
-def print_map(territories: Territories, players: Players) -> None:
+def print_map(territories: Territories, players: Players, phase: str | None = None) -> None:
+    """Draw the board. phase is the game phase the map is shown in ("expansion", "combat", "repositioning" or
+    "reinforcement"); when position values are switched on (--show-values), the critic scores each player for it."""
     player_colors = {0: "⚪", 1: "🔴", 2: "🔵", 3: "🟢", 4: "🟡", 5: "🟣"}
 
     alaska =        f"{player_colors[territories['Alaska']['owned_by']]} {territories['Alaska']['units']}"
@@ -212,16 +253,19 @@ def print_map(territories: Territories, players: Players) -> None:
     australia =     f"{player_colors[territories['Australia']['owned_by']]} {territories['Australia']['units']}"
 
     
+    values = value_scorer.position_values(territories, players, phase) if value_scorer and phase else {}
     legend_lines = []
     for player_id in range(1, MAX_PLAYERS + 1):
         if player_id in players:
-            text = (f"({player_id}) {player_colors[player_id]} {players[player_id]['name']}: "
-                     f"{count_territories_owned(territories, player_id)}")
-            line = text[:30].ljust(30)
+            prefix = f"({player_id}) {player_colors[player_id]} "
+            suffix = f": {count_territories_owned(territories, player_id)}"
+            if player_id in values:
+                suffix += f", {values[player_id]:+.2f}"
+            name = players[player_id]["name"][:35 - len(prefix) - len(suffix)]  # shorten the name, never the numbers
+            line = (prefix + name + suffix).ljust(35)
         else:
-            text = ""
-            line = text.ljust(31)
-        
+            line = "".ljust(35)
+
         legend_lines.append(line)
 
     game_map = rf""" 	                                ..::::::'':::..'''''''''''''''::....
@@ -249,16 +293,16 @@ def print_map(territories: Territories, players: Players) -> None:
                                              '.                 ''.                   :           :                              ':...          ''.:.
                                               '.                 :                     :   {south_africa}    :   .                                    .....'. ''
                                                '.     {south_america}      :                      South Africa   ::                                 .''   :' '.
-                                                 :South America.'                     :          .'  .:'                             ..''           :
+                                                 :South America.'                     :          .'  .:'                            ..''           :
                                                  :          ..''                       :        .'   :'                             .'      {australia}     '.
                                                  :         .'                          '.      .'                                   :     Australia   :
                                                  :        .'                            :     :                                      :.   ..'.       :
                                                 :      .''                               '''''                                         '''    ''..  .'      :..
-{legend_lines[0]}                 :    .'                                                                                           ::        .:'
-{legend_lines[1]}                 :   .'                                                                                             ''      ::
-{legend_lines[2]}                 :  :                                                                                                      ''
-{legend_lines[3]}                  '.:  ''
-{legend_lines[4]}                    ''"""
+{legend_lines[0]}            :    .'                                                                                           ::        .:'
+{legend_lines[1]}            :   .'                                                                                             ''      ::
+{legend_lines[2]}            :  :                                                                                                      ''
+{legend_lines[3]}             '.:  ''
+{legend_lines[4]}               ''"""
     print(game_map)
 
 
@@ -287,12 +331,10 @@ def is_attack_possible(territories: Territories, adjacency: Adjacency) -> bool:
     return False
 
 
-def player_can_move(territories: Territories, player_id: int) -> bool:
-    """A player can move if they have more than one troops in a region."""
-    for info in territories.values():
-        if info["units"] > 1 and info["owned_by"] == player_id:
-            return True
-    return False
+def player_can_move(territories: Territories, adjacency: Adjacency, player_id: int) -> bool:
+    """A player can move if some region of theirs has more than one unit and a neighbouring region (own or unclaimed)
+    to move them into."""
+    return bool(get_reposition_source_options(territories, adjacency, player_id))
 
 
 def check_player_status(territories: Territories, players: Players) -> None:
@@ -320,6 +362,7 @@ def broadcast_event(event: str, players: Players) -> None:
     print(event)
 
 
+
 # ---------------------------------------------------------------------------
 # Combat
 # ---------------------------------------------------------------------------
@@ -327,8 +370,8 @@ def broadcast_event(event: str, players: Players) -> None:
 def do_battle(attacker: str, defender: str, territories: Territories, players: Players, adjacency: Adjacency, agent: Agent | None) -> None:
     """Resolve combat between attacker and defender by rolls until the attacker backs down, the defender is conquered,
     or the attacker no longer has enough units to continue."""
-    attacking_player_id = territories[attacker]["owned_by"]
-    attacking_player = players[attacking_player_id]
+    attacking_player_id   = territories[attacker]["owned_by"]
+    attacking_player      = players[attacking_player_id]
     defending_player_name = players[territories[defender]["owned_by"]]["name"]
  
     event = f"{attacking_player['name']} ({attacking_player_id}) attacks {defender} ({defending_player_name}) from {attacker}:"
@@ -338,8 +381,8 @@ def do_battle(attacker: str, defender: str, territories: Territories, players: P
     while keep_attacking and territories[attacker]["units"] > 1 and territories[defender]["units"] > 0:
         attack_roll = random.randint(1, 6)
         defend_roll = random.randint(1, 6)
-        att_event = f"- Attacker roll: {attack_roll}"
-        def_event = f"- Defender roll: {defend_roll}"
+        att_event   = f"- Attacker roll: {attack_roll}"
+        def_event   = f"- Defender roll: {defend_roll}"
         if players[attacking_player_id]["is_agent"]:
             players[attacking_player_id]["game_events"].append(att_event)
             players[attacking_player_id]["game_events"].append(def_event)
@@ -358,8 +401,8 @@ def do_battle(attacker: str, defender: str, territories: Territories, players: P
             territories[defender]["owned_by"] = attacking_player_id
             max_occupy = territories[attacker]["units"] - 1
             if attacking_player["is_agent"]:
-                question = f"You've conquered {defender} from {attacker}. Select the number of troops you send in."
-                num_units = agent.choose_unit_count(question, players, attacking_player_id, min_units=1, max_units=max_occupy)
+                question  = f"You've conquered {defender} from {attacker}. Select the number of troops you send in."
+                num_units = agent.choose_unit_count(question, territories, adjacency, players, attacking_player_id, min_units=1, max_units=max_occupy, decision_type="attack_occupy", selected=(attacker, defender))
                 players[attacking_player_id]["game_events"] = []
                 territories[attacker]["units"] -= num_units
                 territories[defender]["units"] += num_units
@@ -367,7 +410,7 @@ def do_battle(attacker: str, defender: str, territories: Territories, players: P
                 num_units = get_int_input(f"{attacking_player["name"]} ({attacking_player_id}), number of units to occupy the region (1-{max_occupy}): ", min_val=1, max_val=max_occupy)
                 territories[attacker]["units"] -= num_units
                 territories[defender]["units"] += num_units
-                print_map(territories, players)
+                print_map(territories, players, "combat")
 
             event = f"{defender} has been conquered by {players[attacking_player_id]["name"]} ({attacking_player_id}) with {num_units} units."
             broadcast_event(event, players)
@@ -379,16 +422,17 @@ def do_battle(attacker: str, defender: str, territories: Territories, players: P
             return
 
         if attacking_player["is_agent"]:
-            keep_attacking = agent.choose_yes_no("Do you want to continue the attack?", players, attacking_player_id)
+            keep_attacking = agent.choose_yes_no("Do you want to continue the attack?", territories, adjacency, players, attacking_player_id, decision_type="continue_attack", selected=(attacker, defender))
             players[attacking_player_id]["game_events"] = []
         else:
-            print_map(territories, players)
+            print_map(territories, players, "combat")
             keep_attacking = get_yes_no_input("Continue the attack? (y/n): ")
 
         if keep_attacking:
             broadcast_event(f"- {attacking_player["name"]} ({attacking_player_id}) continues the attack.", players)
         else:
             broadcast_event(f"- {attacking_player["name"]} ({attacking_player_id}) called off the attack.", players)
+
 
 
 # ---------------------------------------------------------------------------
@@ -404,11 +448,11 @@ def run_initial_expansion_phase(territories: Territories, adjacency: Adjacency, 
         remaining = units_per_player - round_num
         for player_id, player in players.items():
             if player["is_agent"]:
-                agent = agents[player["model"]]
+                agent  = agents[player["model"]]
                 region = agent_choose_placement(territories, adjacency, players, player_id, remaining, agent)
                 player["game_events"] = []
             else:
-                print_map(territories, players)
+                print_map(territories, players, "expansion")
                 region = human_choose_placement(territories, adjacency, players, player_id, remaining)
 
             if territories[region]["owned_by"] == 0:
@@ -420,7 +464,7 @@ def run_initial_expansion_phase(territories: Territories, adjacency: Adjacency, 
 
             territories[region]["owned_by"] = player_id
             territories[region]["units"] += 1
-    print_map(territories, players)
+    print_map(territories, players, "combat")
 
 
 def human_choose_placement(territories: Territories, adjacency: Adjacency, players: Players, player_id: int, remaining: int) -> str:
@@ -438,8 +482,7 @@ def agent_choose_placement(territories: Territories, adjacency: Adjacency, playe
     """Prompts an agent for an initial expansion placement by choosing a territory."""
     valid_options = [t for t in territories if is_valid_placement(territories, adjacency, player_id, t)]
     question = f"The game is in the initial expansion phase. Place a unit to a region you control or an unclaimed neighbouring one. You have {remaining} unit(s) remaining."
-    state = describe_state_for_agent(territories, adjacency, players)
-    return agent.choose_territory(state, question, valid_options, players, player_id)
+    return agent.choose_territory(question, valid_options, territories, adjacency, players, player_id, decision_type="placement", remaining_units=remaining)
 
 
 def get_attacker_options(territories: Territories, adjacency: Adjacency, player_id: int) -> list[str]:
@@ -460,7 +503,7 @@ def human_handle_attack(territories: Territories, adjacency: Adjacency, players:
     """Lets a human player either launch a single attack or skip their turn for this round.
     Returns True if done for this round (skipped), False if they completed an attack."""
     player = players[player_id]
-    print_map(territories, players)
+    print_map(territories, players, "combat")
     while True:
         attacker = prompt_territory_or_cancel(
             f"{player['name']} ({player_id}), select a region to initiate an attack from or skip your attacking turn (type 'X'): ",
@@ -498,9 +541,7 @@ def agent_handle_attack(territories: Territories, adjacency: Adjacency, players:
     Returns True if done for this round (skipped), False if they completed an attack."""
 
     question = f"Select a territory to initiate an attack from or skip your attacking turn."
-    state = describe_state_for_agent(territories, adjacency, players)
-
-    attacker = agent.choose_territory(state, question, attacker_options, players, player_id, allow_skip=True)
+    attacker = agent.choose_territory(question, attacker_options, territories, adjacency, players, player_id, allow_skip=True, decision_type="attack_source")
     players[player_id]["game_events"] = []
     if attacker is None:
         event = f"{players[player_id]["name"]} ({player_id}) skipped their attacking turn."
@@ -509,8 +550,7 @@ def agent_handle_attack(territories: Territories, adjacency: Adjacency, players:
 
     defender_options = get_defender_options(territories, adjacency, attacker, player_id)
     question = f"You chose to attack from {attacker}. Chose a territory to attack."
-    state = describe_state_for_agent(territories, adjacency, players)
-    defender = agent.choose_territory("", question, defender_options, players, player_id)
+    defender = agent.choose_territory(question, defender_options, territories, adjacency, players, player_id, decision_type="attack_target", selected=(attacker,))
     players[player_id]["game_events"] = []
 
     do_battle(attacker, defender, territories, players, adjacency, agent)
@@ -550,25 +590,33 @@ def run_attacking_phase(territories: Territories, adjacency: Adjacency, players:
             break
 
 
-def get_reposition_source_options(territories: Territories, player_id: int) -> list[str]:
-    return [t for t, info in territories.items() if info["owned_by"] == player_id and info["units"] >= 2]
+def get_reposition_source_options(territories: Territories, adjacency: Adjacency, player_id: int) -> list[str]:
+    """Regions the player can move units out of: owned, at least 2 units, and at least one destination (a region surrounded
+    by enemies has none)."""
+    return [
+        t for t, info in territories.items()
+        if info["owned_by"] == player_id and info["units"] >= 2
+        and get_reposition_destination_options(territories, adjacency, t, player_id)
+    ]
 
 
 def get_reposition_destination_options(territories: Territories, adjacency: Adjacency, region_from: str, player_id: int) -> list[str]:
-    return [n for n in adjacency[region_from] if territories[n]["owned_by"] in (0, player_id)]
+    """Own or unclaimed neighbours of region_from. region_from itself is excluded: the adjacency sets contain self-loops,
+    and moving units onto the region they are already in would be a no-op that still uses up a move."""
+    return [n for n in adjacency[region_from] if n != region_from and territories[n]["owned_by"] in (0, player_id)]
 
 
 def apply_reposition(territories: Territories, region_from: str, region_to: str, num_units: int, player_id: int) -> None:
     if territories[region_to]["owned_by"] == 0:
         territories[region_to]["owned_by"] = player_id
     territories[region_from]["units"] -= num_units
-    territories[region_to]["units"] += num_units
+    territories[region_to]["units"]   += num_units
 
 
 def human_reposition_turn(territories: Territories, adjacency: Adjacency, players: Players, player_id: int) -> None:
     player = players[player_id]
     while True:
-        if not player_can_move(territories, player_id):
+        if not player_can_move(territories, adjacency, player_id):
             event = f"{player['name']} ({player_id}) has no troops to reposition. Skipping turn."
             broadcast_event(event, players)
             return
@@ -589,10 +637,14 @@ def human_reposition_turn(territories: Territories, adjacency: Adjacency, player
             print("You need a region with at least 2 units.")
             continue
 
-        region_to = prompt_territory(f"{player['name']} ({player_id}), select a region to move units to: ", territories)
-        valid_destination = (region_to in adjacency[region_from] and territories[region_to]["owned_by"] in (0, player_id))
-        if not valid_destination:
-            print(f"{region_to} is not a valid destination. Choose a neutral or your own neighbouring region.")
+        destination_options = get_reposition_destination_options(territories, adjacency, region_from, player_id)
+        if not destination_options:
+            print(f"{region_from} has no neighbouring region you can move into. Choose another region.")
+            continue
+
+        region_to = prompt_territory(f"{player['name']} ({player_id}), select a region to move units to ({', '.join(destination_options)}): ", territories)
+        if region_to not in destination_options:
+            print(f"{region_to} is not a valid destination. Choose one of: {', '.join(destination_options)}.")
             continue
 
         max_movable = territories[region_from]["units"] - 1
@@ -605,7 +657,7 @@ def human_reposition_turn(territories: Territories, adjacency: Adjacency, player
 
         apply_reposition(territories, region_from, region_to, num_units, player_id)
         broadcast_event(event, players)
-        print_map(territories, players)
+        print_map(territories, players, "repositioning")
 
 
 def agent_reposition_turn(territories: Territories, adjacency: Adjacency, players: Players, player_id: int, agent: Agent) -> None:
@@ -615,15 +667,14 @@ def agent_reposition_turn(territories: Territories, adjacency: Adjacency, player
 
     moves_remaining = 3
     while moves_remaining > 0:
-        source_options = get_reposition_source_options(territories, player_id)
+        source_options = get_reposition_source_options(territories, adjacency, player_id)
         if not source_options:
             event = f"{players[player_id]['name']} ({player_id}) has no troops to reposition. Skipping turn."
             broadcast_event(event, players)
             return
 
-        question = f"Select a territory you want to move troops from or finish repositioning."
-        state = describe_state_for_agent(territories, adjacency, players)
-        region_from = agent.choose_territory(state, question, source_options, players, player_id, allow_skip=True)
+        question    = f"Select a territory you want to move troops from or finish repositioning."
+        region_from = agent.choose_territory(question, source_options, territories, adjacency, players, player_id, allow_skip=True, decision_type="reposition_source")
         players[player_id]["game_events"] = []
         if region_from is None:
             event = f"{players[player_id]["name"]} ({player_id}) finished repositioning."
@@ -632,13 +683,13 @@ def agent_reposition_turn(territories: Territories, adjacency: Adjacency, player
 
         destination_options = get_reposition_destination_options(territories, adjacency, region_from, player_id)
 
-        question = f"You chose to move units from {region_from}. Select a territory you want to move troops to."
-        region_to = agent.choose_territory("", question, destination_options, players, player_id)
+        question  = f"You chose to move units from {region_from}. Select a territory you want to move troops to."
+        region_to = agent.choose_territory(question, destination_options, territories, adjacency, players, player_id, decision_type="reposition_destination", selected=(region_from,))
         players[player_id]["game_events"] = []
 
         max_movable = territories[region_from]["units"] - 1
-        question = f"You chose to move units from {region_from} to {region_to}. Select the number of units to move."
-        num_units = agent.choose_unit_count(question, players, player_id, min_units=1, max_units=max_movable)
+        question  = f"You chose to move units from {region_from} to {region_to}. Select the number of units to move."
+        num_units = agent.choose_unit_count(question, territories, adjacency, players, player_id, min_units=1, max_units=max_movable, decision_type="reposition_count", selected=(region_from, region_to))
         players[player_id]["game_events"] = []
 
         if territories[region_to]["owned_by"] == 0:
@@ -659,7 +710,7 @@ def run_repositioning_phase(territories: Territories, adjacency: Adjacency, play
     for player_id, player in players.items():
         if not player["is_playing"]:
             continue
-        if not player_can_move(territories, player_id):
+        if not player_can_move(territories, adjacency, player_id):
             event = f"{player['name']} ({player_id}) has no troops to reposition. Skipping turn."
             broadcast_event(event, players)
             continue
@@ -668,7 +719,7 @@ def run_repositioning_phase(territories: Territories, adjacency: Adjacency, play
             agent = agents[player["model"]]
             agent_reposition_turn(territories, adjacency, players, player_id, agent)
         else:
-            print_map(territories, players)
+            print_map(territories, players, "repositioning")
             human_reposition_turn(territories, adjacency, players, player_id)
 
 
@@ -686,19 +737,18 @@ def human_reinforce_turn(territories: Territories, players: Players, player_id: 
 
         event = f"{players[player_id]["name"]} ({player_id}) reinforced {region} with {num_units} units."
         broadcast_event(event, players)
-        print_map(territories, players)
+        print_map(territories, players, "reinforcement")
 
 
 def agent_reinforce_turn(territories: Territories, adjacency: Adjacency, players: Players, player_id: int, reinforcements: int, agent: Agent) -> None:
     owned_options = [t for t, info in territories.items() if info["owned_by"] == player_id]
     while reinforcements > 0:
-        state = describe_state_for_agent(territories, adjacency, players)
-        question = f"You have {reinforcements} reinforcement troops left to place. Select a region you want to fortify."
-        region = agent.choose_territory(state, question, owned_options, players, player_id)
+        question  = f"You have {reinforcements} reinforcement troops left to place. Select a region you want to fortify."
+        region    = agent.choose_territory(question, owned_options, territories, adjacency, players, player_id, decision_type="reinforce_target", remaining_units=reinforcements)
         players[player_id]["game_events"] = []
 
-        question = f"You chose to reinforce {region}. Select the number of troops."
-        num_units = agent.choose_unit_count(question, players, player_id, min_units=1, max_units=reinforcements)
+        question  = f"You chose to reinforce {region}. Select the number of troops."
+        num_units = agent.choose_unit_count(question, territories, adjacency, players, player_id, min_units=1, max_units=reinforcements, decision_type="reinforce_count", selected=(region,))
         players[player_id]["game_events"] = []
 
         territories[region]["units"] += num_units
@@ -721,7 +771,7 @@ def run_reinforcement_phase(territories: Territories, adjacency: Adjacency, play
             agent = agents[players[player_id]["model"]]
             agent_reinforce_turn(territories, adjacency, players, player_id, reinforcements, agent)
         else:
-            print_map(territories, players)
+            print_map(territories, players, "reinforcement")
             human_reinforce_turn(territories, players, player_id, reinforcements)
 
 
@@ -729,12 +779,14 @@ def run_reinforcement_phase(territories: Territories, adjacency: Adjacency, play
 # Main game loop
 # ---------------------------------------------------------------------------
 
-def main():
+def main(show_values: bool = False):
     territories = build_territories()
     adjacency   = build_adjacency()
 
     players = setup_players()
-    agents = build_agents(players)
+    agents  = build_agents(players)
+    if show_values:
+        setup_value_scorer(agents)
     assign_starting_territories(territories, players)
 
     units_per_player = STARTING_UNITS[len(players)]
@@ -744,7 +796,7 @@ def main():
     while winner_name is None:
 
         if not check_for_human_player(players):
-            print_map(territories, players)
+            print_map(territories, players, "combat")
 
         run_attacking_phase(territories, adjacency, players, agents)
         check_player_status(territories, players)
@@ -762,4 +814,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Play Conquest in the console.")
+    parser.add_argument("--show-values", action="store_true",
+                        help=f"show the trained critic's estimate for every player next to the map legend "
+                             f"(needs PyTorch and {RL_CHECKPOINT}; skipped if either is missing)")
+    main(show_values=parser.parse_args().show_values)

@@ -5,37 +5,109 @@ from abc import ABC, abstractmethod
 
 from game_types import Adjacency, Players, Territories
 
+# Stable identifiers for every decision context in the game, passed as
+# decision_type to the Agent primitives below. LLM-backed agents ignore
+# these; agents with per-context logic (e.g. separate network heads) use
+# them to know which decision they're being asked to make.
+DECISION_TYPES = {
+    "placement",              # choose_territory: initial expansion placement
+    "attack_source",          # choose_territory: territory to attack from (allow_skip=True)
+    "attack_target",          # choose_territory: enemy territory to attack
+    "reposition_source",      # choose_territory: territory to move units from (allow_skip=True)
+    "reposition_destination", # choose_territory: territory to move units to
+    "reinforce_target",       # choose_territory: territory to reinforce
+    "attack_occupy",          # choose_unit_count: units to move into a conquered territory
+    "reposition_count",       # choose_unit_count: units to move during repositioning
+    "reinforce_count",        # choose_unit_count: units to place during reinforcement
+    "continue_attack",        # choose_yes_no: whether to continue an ongoing attack
+}
+
+# Territories chosen earlier in the same action, passed to the Agent methods
+# as `selected` (in this order), so an agent never has to remember its own
+# previous choices. Decisions not listed here get selected=().
+SELECTED_TERRITORIES = {
+    "attack_target":          ("attack source",),
+    "continue_attack":        ("attack source", "attack target"),
+    "attack_occupy":          ("attack source", "conquered territory"),
+    "reposition_destination": ("reposition source",),
+    "reposition_count":       ("reposition source", "reposition destination"),
+    "reinforce_count":        ("reinforced territory",),
+}
+
+
 class Agent(ABC):
-    """Common interface every player-controlling agent must implement.
-    Every decision in the game reduces to one of these three primitives."""
- 
+    """Common interface every player-controlling agent must implement. Every decision in the game reduces
+    to one of these three primitives.
+
+    Every call receives the live board -- territories (owner and units of each territory) and adjacency
+    (the fixed map) -- plus players and the acting player_id. What an agent does with them is its own
+    business: LLM agents render a text description (describe_state_for_agent), the RL agent encodes a
+    tensor, RandomAgent ignores them. Agents must not modify them."""
+
     @abstractmethod
     def choose_territory(
         self,
-        state_description: str,
         question: str,
         options: list[str],
+        territories: Territories,
+        adjacency: Adjacency,
         players: Players,
         player_id: int,
         allow_skip: bool = False,
+        decision_type: str = "",
+        selected: tuple[str, ...] = (),
+        remaining_units: int | None = None,
     ) -> str | None:
-        """Pick one territory name from options. Returns None only if
-        allow_skip is True and the agent chooses to skip."""
- 
+        """Pick one territory name from options. Returns None only if allow_skip is True and the agent
+        chooses to skip.
+
+        decision_type is a stable tag identifying which kind of territory choice this is (e.g.
+        "attack_source", "attack_target", "reposition_source", "reposition_destination", "placement",
+        "reinforce_target") -- see DECISION_TYPES. Agents can use it to decide what to show a model (LLM
+        agents skip the board for follow-up choices) or to route to a per-decision network head (the RL
+        agent).
+
+        selected holds the territories chosen earlier in the same action (see SELECTED_TERRITORIES), e.g.
+        (attack source,) for "attack_target".
+
+        remaining_units is the number of units still to place, including this one: initial placements left
+        for "placement", reinforcements left this turn for "reinforce_target"; None for other decisions."""
+
     @abstractmethod
     def choose_unit_count(
         self,
         question: str,
+        territories: Territories,
+        adjacency: Adjacency,
         players: Players,
         player_id: int,
         min_units: int,
         max_units: int,
+        decision_type: str = "",
+        selected: tuple[str, ...] = (),
     ) -> int:
-        """Pick a whole number of units in [min_units, max_units]."""
- 
+        """Pick a whole number of units in [min_units, max_units].
+
+        decision_type is a stable tag (e.g. "attack_occupy", "reposition_count", "reinforce_count") -- see
+        DECISION_TYPES. selected holds the territories involved (see SELECTED_TERRITORIES), e.g. (source,
+        destination) for "reposition_count"."""
+
     @abstractmethod
-    def choose_yes_no(self, question: str, players: Players, player_id: int) -> bool:
-        """Answer a yes/no question."""
+    def choose_yes_no(
+        self,
+        question: str,
+        territories: Territories,
+        adjacency: Adjacency,
+        players: Players,
+        player_id: int,
+        decision_type: str = "",
+        selected: tuple[str, ...] = (),
+    ) -> bool:
+        """Answer a yes/no question.
+
+        decision_type is a stable tag (e.g. "continue_attack") -- see DECISION_TYPES. selected holds the
+        territories involved (see SELECTED_TERRITORIES), e.g. (attack source, attack target) for
+        "continue_attack"."""
 
 
 def get_system_prompt(name: str, player_id: int) -> str:
@@ -99,7 +171,7 @@ class GeminiAgent(Agent):
     """Wraps a google-genai client so the game logic is entirely separated from prompts, schemas, and the Gemini SDK. 
     Uses the Interactions API (previous_interaction_id) so each player's agent retains memory of its own game across calls."""
 
-    def __init__(self, model: str = "gemini-2.5-flash", show_thoughts: bool = True, thinking_level: str = "low"):
+    def __init__(self, model: str = "gemini-2.5-flash", show_thoughts: bool = False, thinking_level: str = "low"):
         from dotenv import load_dotenv
         from google import genai
 
@@ -118,10 +190,10 @@ class GeminiAgent(Agent):
         response = self.client.interactions.create(
             model = self.model,
             input = prompt_text,
-            response_format    = schema,
-            system_instruction = get_system_prompt(player_name, player_id),
+            response_format         = schema,
+            system_instruction      = get_system_prompt(player_name, player_id),
             previous_interaction_id = interaction_id,
-            generation_config  = {
+            generation_config       = {
             "thinking_level": self.thinking_level, # Options: "low", "medium", "high"
             "thinking_summaries": "auto"           # Requests the model to include internal reasoning
             }
@@ -132,11 +204,10 @@ class GeminiAgent(Agent):
         return response
 
     
-    def choose_territory(self, state_description: str, question: str, options: list[str], players: Players, player_id: int, allow_skip: bool = False) -> str | None:
-        """Asks the agent to pick one territory name from the options. Returns
-        None if allow_skip is True and the agent chooses to skip."""
+    def choose_territory(self, question: str, options: list[str], territories: Territories, adjacency: Adjacency, players: Players, player_id: int, allow_skip: bool = False, decision_type: str = "", selected: tuple[str, ...] = (), remaining_units: int | None = None) -> str | None:
+        """Asks the agent to pick one territory name from the options. Returns None if allow_skip is True and the agent chooses to skip."""
 
-        options = list(options)
+        options     = list(options)
         enum_values = options + (["SKIP"] if allow_skip else [])
  
         schema = {
@@ -145,7 +216,8 @@ class GeminiAgent(Agent):
             "required": ["territory"],
         }
 
-        prompt = build_prompt(players[player_id]["game_events"], enum_values, state_description, question)
+        state    = llm_state_description(territories, adjacency, players, decision_type)
+        prompt   = build_prompt(players[player_id]["game_events"], enum_values, state, question)
         response = self._generate(prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
@@ -154,7 +226,7 @@ class GeminiAgent(Agent):
             return None
         return result["territory"]
 
-    def choose_unit_count(self, question: str, players: Players, player_id: int, min_units: int, max_units: int) -> int:
+    def choose_unit_count(self, question: str, territories: Territories, adjacency: Adjacency, players: Players, player_id: int, min_units: int, max_units: int, decision_type: str = "", selected: tuple[str, ...] = ()) -> int:
         """Ask the agent to pick a whole number of units in [min_units, max_units]."""
 
         enum_values = [str(n) for n in range(min_units, max_units + 1)]
@@ -164,24 +236,24 @@ class GeminiAgent(Agent):
             "required": ["units"],
         }
 
-        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
+        prompt   = build_prompt(players[player_id]["game_events"], enum_values, "", question)
         response = self._generate(prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
         result = json.loads(response.output_text)
         return result["units"]
 
-    def choose_yes_no(self, question: str, players: Players, player_id: int) -> bool:
+    def choose_yes_no(self, question: str, territories: Territories, adjacency: Adjacency, players: Players, player_id: int, decision_type: str = "", selected: tuple[str, ...] = ()) -> bool:
         """Ask the agent a yes/no question. Returns True or False."""
 
         enum_values = ["yes (True)", "no (False)"]
-        schema = {
+        schema      = {
             "type": "object",
             "properties": {"answer": {"type": "boolean"}},
             "required": ["answer"],
         }
  
-        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
+        prompt   = build_prompt(players[player_id]["game_events"], enum_values, "", question)
         response = self._generate(prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
@@ -193,7 +265,7 @@ class OpenAIAgent(Agent):
     """Wraps an OpenAI client utilizing the Responses API so game logic is entirely separated from prompts, schemas, and the OpenAI SDK.
     Uses previous_response_id so each player's agent retains memory of its own game across calls."""
 
-    def __init__(self, model: str = "gpt-5-nano", show_thoughts: bool = True, thinking_level: str = "low"):
+    def __init__(self, model: str = "gpt-5-nano", show_thoughts: bool = False, thinking_level: str = "low"):
         from dotenv import load_dotenv
         from openai import OpenAI
 
@@ -203,8 +275,8 @@ class OpenAIAgent(Agent):
             raise RuntimeError("API key not found. Set OPENAI_KEY in your environment or .env file.")
 
 
-        self.client = OpenAI(api_key=api_key)
-        self.model  = model
+        self.client         = OpenAI(api_key=api_key)
+        self.model          = model
         self.thinking_level = thinking_level
         self.show_thoughts  = show_thoughts
 
@@ -214,18 +286,18 @@ class OpenAIAgent(Agent):
             input = prompt_text,
             text={
                 "format": {
-                    "type": "json_schema",
-                    "name": action_name,
+                    "type":   "json_schema",
+                    "name":   action_name,
                     "strict": True,
                     "schema": schema
                 }
             },
-            instructions = get_system_prompt(player_name, player_id),
+            instructions         = get_system_prompt(player_name, player_id),
             previous_response_id = response_id,
-            reasoning = {
+            reasoning            = {
             "effort": self.thinking_level,
             "summary": "auto"
-        }
+            }
         )
 
         if self.show_thoughts:
@@ -236,11 +308,10 @@ class OpenAIAgent(Agent):
         return response
 
     
-    def choose_territory(self, state_description: str, question: str, options: list[str], players: Players, player_id: int, allow_skip: bool = False) -> str | None:
-        """Asks the agent to pick one territory name from the options. Returns
-        None if allow_skip is True and the agent chooses to skip."""
+    def choose_territory(self, question: str, options: list[str], territories: Territories, adjacency: Adjacency, players: Players, player_id: int, allow_skip: bool = False, decision_type: str = "", selected: tuple[str, ...] = (), remaining_units: int | None = None) -> str | None:
+        """Asks the agent to pick one territory name from the options. Returns None if allow_skip is True and the agent chooses to skip."""
 
-        options = list(options)
+        options     = list(options)
         enum_values = options + (["SKIP"] if allow_skip else [])
  
         schema = {
@@ -250,7 +321,8 @@ class OpenAIAgent(Agent):
             "additionalProperties": False
         }
 
-        prompt = build_prompt(players[player_id]["game_events"], enum_values, state_description, question)
+        state    = llm_state_description(territories, adjacency, players, decision_type)
+        prompt   = build_prompt(players[player_id]["game_events"], enum_values, state, question)
         response = self._generate("choose_territory", prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
@@ -259,10 +331,10 @@ class OpenAIAgent(Agent):
             return None
         return result["territory"]
 
-    def choose_unit_count(self, question: str, players: Players, player_id: int, min_units: int, max_units: int) -> int:
+    def choose_unit_count(self, question: str, territories: Territories, adjacency: Adjacency, players: Players, player_id: int, min_units: int, max_units: int, decision_type: str = "", selected: tuple[str, ...] = ()) -> int:
         """Ask the agent to pick a whole number of units in [min_units, max_units]."""
 
-        enum_values = [str(n) for n in range(min_units, max_units + 1)]
+        enum_values    = [str(n) for n in range(min_units, max_units + 1)]
         valid_integers = list(range(min_units, max_units + 1))
 
         schema = {
@@ -272,25 +344,25 @@ class OpenAIAgent(Agent):
             "additionalProperties": False
         }
 
-        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
+        prompt   = build_prompt(players[player_id]["game_events"], enum_values, "", question)
         response = self._generate("choose_unit_count", prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
         result = json.loads(response.output_text)
         return result["units"]
 
-    def choose_yes_no(self, question: str, players: Players, player_id: int) -> bool:
+    def choose_yes_no(self, question: str, territories: Territories, adjacency: Adjacency, players: Players, player_id: int, decision_type: str = "", selected: tuple[str, ...] = ()) -> bool:
         """Ask the agent a yes/no question. Returns True or False."""
 
         enum_values = ["yes (True)", "no (False)"]
-        schema = {
+        schema      = {
             "type": "object",
             "properties": {"answer": {"type": "boolean"}},
             "required": ["answer"],
             "additionalProperties": False
         }
  
-        prompt = build_prompt(players[player_id]["game_events"], enum_values, "", question)
+        prompt   = build_prompt(players[player_id]["game_events"], enum_values, "", question)
         response = self._generate("choose_yes_no", prompt, schema, players[player_id]["name"], player_id, players[player_id]["interaction_id"])
         players[player_id]["interaction_id"] = response.id
 
@@ -302,28 +374,41 @@ class RandomAgent(Agent):
     """Implements a mock interface as if it were an AI agent, but makes uniformly random valid choices, with no API calls. 
     Useful for automated testing of the game logic without spending API credits, and as a rules-only opponent."""
     
-    def choose_territory(self, state_description: str, question: str, options: list[str], players: Players, player_id: int, allow_skip: bool = False) -> str | None:
+    def choose_territory(self, question: str, options: list[str], territories: Territories, adjacency: Adjacency, players: Players, player_id: int, allow_skip: bool = False, decision_type: str = "", selected: tuple[str, ...] = (), remaining_units: int | None = None) -> str | None:
         options = list(options)
         if allow_skip and random.random() < 1 / (len(options) + 1):
             return None
         return random.choice(options)
 
-    def choose_unit_count(self, question: str, players: Players, player_id: int, min_units: int, max_units: int) -> int:
+    def choose_unit_count(self, question: str, territories: Territories, adjacency: Adjacency, players: Players, player_id: int, min_units: int, max_units: int, decision_type: str = "", selected: tuple[str, ...] = ()) -> int:
         return random.randint(min_units, max_units)
 
 
-    def choose_yes_no(self, question: str, players: Players, player_id: int) -> bool:
+    def choose_yes_no(self, question: str, territories: Territories, adjacency: Adjacency, players: Players, player_id: int, decision_type: str = "", selected: tuple[str, ...] = ()) -> bool:
         return random.random() < 0.5
 
 
+# Territory choices that directly follow another choice in the same turn
+# (attack target after attack source, destination after source). The LLM saw
+# the board in the previous prompt of the same conversation, so it isn't
+# repeated for these -- nor for unit counts and yes/no questions.
+FOLLOW_UP_DECISIONS = {"attack_target", "reposition_destination"}
+
+
+def llm_state_description(territories: Territories, adjacency: Adjacency, players: Players, decision_type: str) -> str:
+    """Board text for an LLM territory prompt, or "" for follow-up decisions."""
+    if decision_type in FOLLOW_UP_DECISIONS:
+        return ""
+    return describe_state_for_agent(territories, adjacency, players)
+
+
 def describe_state_for_agent(territories: Territories, adjacency: Adjacency, players: Players) -> str:
-    """Build a plain-text summary of the current game state from one
-    player's point of view. Reused for every decision type so the agent
-    always sees the board in a consistent format."""
+    """Build a plain-text summary of the current game state from one player's point of view. Reused for every decision type
+    so the agent always sees the board in a consistent format."""
 
     lines = ["### Current game state (owner, units, neighbours):"]
     for name, info in territories.items():
-        owner = "0 (unclaimed)" if info["owned_by"] == 0 else f"{players[info['owned_by']]['name']} (player {info['owned_by']})"
+        owner      = "0 (unclaimed)" if info["owned_by"] == 0 else f"{players[info['owned_by']]['name']} (player {info['owned_by']})"
         neighbours = ", ".join(sorted(t for t in adjacency[name] if t != name))
         lines.append(f"- {name}: owner = {owner}, units = {info['units']}, neighbours = [{neighbours}]")
     lines.append("")
@@ -332,7 +417,7 @@ def describe_state_for_agent(territories: Territories, adjacency: Adjacency, pla
 
 def build_prompt(game_events: list[str], enum_values: list[str], state_description: str, question: str) -> str:
     if game_events:
-        events_list = "\n".join(f"- {event}" for event in game_events)
+        events_list      = "\n".join(f"- {event}" for event in game_events)
         events_formatted = f"### Game events since your last turn:\n{events_list}\n"
     else:
         events_formatted = ""
